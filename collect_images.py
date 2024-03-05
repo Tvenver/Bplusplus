@@ -13,23 +13,26 @@ def create_folders_from_csv(csv_file, directory_path):
     # Open the CSV file and read the names
     with open(csv_file, 'r') as file:
         csv_reader = csv.reader(file)
-        next(csv_reader)  # Skip the header if there's any
+        next(csv_reader)  # Skip the header
         for row in csv_reader:
             name = row[0].strip()  # Assuming the name is in the first column
+            print(name)
             folder_name = os.path.join(directory_path, name)
             # Create a folder with the name from the CSV
             os.makedirs(folder_name, exist_ok=True)
 
 # Provide the path to your CSV file and the folder where you want to create subfolders
-csv_file = 'names.csv'
-directory_path = 'folders/'
+csv_file = os.path.join('data', "names.csv")
+directory_path = os.path.join('data')
+
 
 create_folders_from_csv(csv_file, directory_path)
 
 # Step 1: Filtering the occurence dataset to only include species of interest, download images afterwards
 #set variables
 batch_size = 100000
-csv_reader = pd.read_table('path/to/unziped/occurrence.txt', chunksize=batch_size)
+#specifiy path to occurence.txt file
+csv_reader = pd.read_table("C:/Users/titusvenverloo/Downloads/beedata/occurrence1.txt", chunksize=batch_size)
 folders = [f for f in os.listdir(directory_path) if os.path.isdir(os.path.join(directory_path, f))]
 col = ['gbifID', 'species']
 final_df = pd.DataFrame()  # Initialize the final DataFrame
@@ -39,14 +42,15 @@ for batch_df in csv_reader:
     batch_df = batch_df[col]
     batch_df = batch_df[batch_df['species'].isin(folders)]
     # Example: Print the first few rows of each batch to double check
-    #print(batch_df.head())
+    print(batch_df.head())
     final_df = pd.concat([final_df, batch_df], ignore_index=True)
 
 #output final df to csv, where csv contains link to multimedia and species
-final_df.to_csv('C:/Users/titusvenverloo/Documents/GitHub/Google-Image-Scraper/photos/occurence_filtered.csv', index=False)
+final_df.to_csv(os.path.join('data','occurence_filtered.csv'), index=False)
 
 #Step 1.b.: Load in links to multimedia, leftjoin with filtered occurence data
-df1 = pd.read_table('path/to/unziped/multimedia.txt', chunksize=batch_size)
+#df1 = pd.read_table(os.path.join('data','multimedia.txt'), chunksize=batch_size)
+df1 = pd.read_table("C:/Users/titusvenverloo/Downloads/beedata/multimedia.txt", chunksize=batch_size)
 folders = [f for f in os.listdir(directory_path) if os.path.isdir(os.path.join(directory_path, f))]
 df2 = final_df
 
@@ -67,7 +71,7 @@ for chunk in df1:
     final_df = pd.concat([final_df, filtered_df], ignore_index=True)
 
 # Step 4: Save the final DataFrame to a new file or use it as needed
-final_df.to_csv('C:/Users/titusvenverloo/Documents/GitHub/Google-Image-Scraper/photos/filtered_insect_species.csv', index=False)
+final_df.to_csv(os.path.join('data','filtered_insect_species.csv'), index=False)
 
 #Step 1.c.: Download images in new folders named according to your convention
 df = final_df
@@ -81,12 +85,12 @@ df['ID_name'] = df.index + 1
 #     return group.sample(frac=0.2)
 # print('start sampling per group')
 # sampled = df.groupby('species').apply(sample_20_percent)
-# sampled.to_csv('C:/Users/titusvenverloo/Documents/GitHub/Google-Image-Scraper/photos/sampled_super_small.csv', index=False)
+# sampled.to_csv(os.path.join('data','sampled_super_small.csv'), index=False)
 # df = sampled
 
 #function to download insect images
 def down_image(url, species, ID_name):
-    directory = f"path/to/where/to/store/photos/{species}"
+    directory = os.path.join('data/dataset', f"{species}")
     os.makedirs(directory, exist_ok=True)
     image_response = requests.get(url)
     image_name = f"{species}{ID_name}.jpg"  # You can modify the naming convention as per your requirements
