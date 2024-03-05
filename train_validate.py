@@ -3,10 +3,13 @@ import os
 import shutil
 import random
 
+
+
 # Define paths
 dataset_path = os.path.join('data', 'dataset')  # Path to your dataset
 train_path = os.path.join('data', 'train')  # Path to the training folder
 val_path = os.path.join('data', 'val')   # Path to the validation folder
+
 
 # Define the ratio for splitting the dataset
 split_ratio = 0.8  # 80% for training, 20% for validation
@@ -51,7 +54,7 @@ for root, dirs, files in os.walk(dataset_path):
 print("Dataset splitting completed successfully.")
 
 # Create a new YOLO model from scratch
-model = YOLO('yolov8n.yaml')
+model = YOLO('yolov8n-cls.pt')
 #
 #define parameters for YOLO training, be aware of epoch, batch, and imgsz, to not exceed system requirements (memory, CPU, GPU...)
 #Folder for training *bplusplus/data/train
@@ -60,5 +63,5 @@ model = YOLO('yolov8n.yaml')
 data = "C:/Users/titusvenverloo/Documents/GitHub/Bplusplus/data/"
 results = model.train(data=data, epochs=5, batch=16, imgsz=224)
 
-model.val()
+model.val(batch=1)
 
