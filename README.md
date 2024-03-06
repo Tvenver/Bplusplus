@@ -5,7 +5,7 @@ This repo can be used to quickly generate YOLOv8 models for biodiversity monitor
 All code is tested on Windows 10 and Python 3.11, without GPU. GPU would obviously accelerate the below steps, Ultralytics should automatically select the available GPU if there is any.
 
 # How does it work?
-1. Input names (scientific names) in the names.csv
+1. Input names (scientific names) in the names.csv file, in the data folder
 2. Download the GBIF repository of your choosing, or download a prepared dataset linking to 16M images of many insect species: https://doi.org/10.15468/dl.dk9czq
 3. Update the path in collect_images.py on line 35 and line 53, to route to the unzipped GBIF downloaded files.
 4. In collect_images.py, consider activating the sampling function, to reduce the number of images to download per species - in the case of many insect species, the download will take longer.
