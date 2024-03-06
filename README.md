@@ -1,8 +1,8 @@
-**B++ repository**
+#B++ repository
 
 This repo can be used to quickly generate YOLOv8 models for biodiversity monitoring, relying on Ultralytics and a GBIF dataset.
 
-**How does it work?**
+#How does it work?
 1. Input names (scientific names) in the names.csv
 2. Download the GBIF repository of your choosing, or download a prepared dataset linking to 16M images of many insect species: https://doi.org/10.15468/dl.dk9czq
 3. Update the path in collect_images.py on line 35 and line 53, to route to the unzipped GBIF downloaded files.
@@ -14,7 +14,8 @@ This repo can be used to quickly generate YOLOv8 models for biodiversity monitor
 
 You have created a YOLOv8 model for image classification.
 
-**Citation**
+#Citation
 
 All information in this GitHub is available under MIT license, as long as credit is given to the authors.
-Venverloo, T., Duarte, F., B++: Towards Real-Time Monitoring of Insect Species. MIT Senseable City Laboratory, AMS Institute
+
+**Venverloo, T., Duarte, F., B++: Towards Real-Time Monitoring of Insect Species. MIT Senseable City Laboratory, AMS Institute.**
