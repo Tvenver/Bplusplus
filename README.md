@@ -14,3 +14,6 @@ This repo can be used to quickly generate YOLOv8 models for biodiversity monitor
 
 You have created a YOLOv8 model for image classification.
 
+**Citation**
+All information in this GitHub is available under MIT license, as long as credit is given to the authors.
+Venverloo, T., Duarte, F., B++: Towards Real-Time Monitoring of Insect Species. MIT Senseable City Laboratory, AMS Institute
