@@ -59,9 +59,10 @@ model = YOLO('yolov8n-cls.pt')
 #define parameters for YOLO training, be aware of epoch, batch, and imgsz, to not exceed system requirements (memory, CPU, GPU...)
 #Folder for training *bplusplus/data/train
 #Folder for validation *bplusplus/data/val
-#
+#Specify path to folder where the val and train folder is located
 data = "C:/Users/titusvenverloo/Documents/GitHub/Bplusplus/data/"
 results = model.train(data=data, epochs=5, batch=16, imgsz=224)
 
+#batch is adjusted to 1 to prevent a resizing bug - in training this bug doesnt emerge. A work around for larger batch size could be a resizing step in advance.
 model.val(batch=1)
 

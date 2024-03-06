@@ -78,11 +78,11 @@ df = final_df
 # df = pd.read_csv('directory/to/csv/from/observ.org/photos/sampled_super_small.csv')
 df['ID_name'] = df.index + 1
 
-#uncomment sampling function, to reduce the test size to 20% of original included testset (in our case from 60k images to 12k images)
+#uncomment sampling function, to reduce the test size to XXX% of original included testset (in our case from 60k images to 12k images)
 
 # df = pd.read_csv('directory/to/csv/from/observ.org/photos/sampled_super_small.csv')
 # def sample_20_percent(group):
-#     return group.sample(frac=0.2)
+#     return group.sample(frac=XXX) #specify fraction percentage you want to download (more images = more time required for downloades_
 # print('start sampling per group')
 # sampled = df.groupby('species').apply(sample_20_percent)
 # sampled.to_csv(os.path.join('data','sampled_super_small.csv'), index=False)
