@@ -31,6 +31,7 @@ create_folders_from_csv(csv_file, directory_path)
 # Step 1: Filtering the occurence dataset to only include species of interest, download images afterwards
 #set variables
 batch_size = 100000
+
 #specifiy path to occurence.txt file
 csv_reader = pd.read_table("C:/Users/titusvenverloo/Downloads/beedata/occurrence1.txt", chunksize=batch_size)
 folders = [f for f in os.listdir(directory_path) if os.path.isdir(os.path.join(directory_path, f))]
@@ -78,13 +79,15 @@ df = final_df
 # df = pd.read_csv('directory/to/csv/from/observ.org/photos/sampled_super_small.csv')
 df['ID_name'] = df.index + 1
 
-#uncomment sampling function, to reduce the test size to XXX% of original included testset (in our case from 60k images to 12k images)
-
+#uncomment sampling function, to reduce the test size to 150 image minimum or XXX% of original included testset (in our case from 60k images to 12k images)
 #df = pd.read_csv('directory/to/csv/from/observ.org/photos/sampled_super_small.csv')
-def sample_20_percent(group):
-    return group.sample(frac=0.1) #specify fraction percentage you want to download (more images = more time required for downloades_
-print('start sampling per group')
-sampled = df.groupby('species').apply(sample_20_percent)
+def sample_minimum(group):
+    # Sample a minimum of 150 images or the total number of images if less than 150
+    return group.sample(n=min(150, len(group)), random_state=42)  # Added random_state for reproducibility
+
+# Assuming df is your DataFrame
+print('Start sampling per group')
+sampled = df.groupby('species').apply(sample_minimum).reset_index(drop=True)
 sampled.to_csv(os.path.join('data','sampled_super_small.csv'), index=False)
 df = sampled
 
