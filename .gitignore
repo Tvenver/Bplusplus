@@ -1,3 +1,6 @@
+tests/data/occurrence.txt
+tests/data/multimedia.txt
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
