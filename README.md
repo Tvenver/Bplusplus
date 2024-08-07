@@ -19,7 +19,6 @@ You have created a YOLOv8 model for image classification.
 ![Figure 9](https://github.com/user-attachments/assets/a01f513b-0609-412d-a633-3aee1e5dded6)
 
 There is also a pretrained YOLOv8 classification model, containing 2584 species, included in this repo under B++ CV Model.
-![Fig2](https://github.com/user-attachments/assets/8b0e73db-c942-41fd-88bc-a1c370f5bd18)
 
 # Citation
 
