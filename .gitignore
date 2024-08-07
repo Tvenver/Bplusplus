@@ -1,5 +1,5 @@
-tests/data/occurrence.txt
-tests/data/multimedia.txt
+notebooks/data/occurrence.txt
+notebooks/data/multimedia.txt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
