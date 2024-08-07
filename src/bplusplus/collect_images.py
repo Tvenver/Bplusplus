@@ -22,8 +22,8 @@ def create_folders_from_csv(csv_file, directory_path):
             os.makedirs(folder_name, exist_ok=True)
 
 # Provide the path to your CSV file and the folder where you want to create subfolders
-csv_file = os.path.join('data', "names.csv")
-directory_path = os.path.join('data', 'dataset')
+csv_file = os.path.join('../../data', "names.csv")
+directory_path = os.path.join('../../data', 'dataset')
 
 
 create_folders_from_csv(csv_file, directory_path)
@@ -47,7 +47,7 @@ for batch_df in csv_reader:
     final_df = pd.concat([final_df, batch_df], ignore_index=True)
 
 #output final df to csv, where csv contains link to multimedia and species
-final_df.to_csv(os.path.join('data','occurence_filtered.csv'), index=False)
+final_df.to_csv(os.path.join('../../data', 'occurence_filtered.csv'), index=False)
 
 #Step 1.b.: Load in links to multimedia, leftjoin with filtered occurence data
 #df1 = pd.read_table(os.path.join('data','multimedia.txt'), chunksize=batch_size)
@@ -72,7 +72,7 @@ for chunk in df1:
     final_df = pd.concat([final_df, filtered_df], ignore_index=True)
 
 # Step 4: Save the final DataFrame to a new file or use it as needed
-final_df.to_csv(os.path.join('data','filtered_insect_species.csv'), index=False)
+final_df.to_csv(os.path.join('../../data', 'filtered_insect_species.csv'), index=False)
 
 #Step 1.c.: Download images in new folders named according to your convention
 df = final_df
@@ -88,7 +88,7 @@ def sample_minimum(group):
 # Assuming df is your DataFrame
 print('Start sampling per group')
 sampled = df.groupby('species').apply(sample_minimum).reset_index(drop=True)
-sampled.to_csv(os.path.join('data','sampled_super_small.csv'), index=False)
+sampled.to_csv(os.path.join('../../data', 'sampled_super_small.csv'), index=False)
 df = sampled
 
 #function to download insect images

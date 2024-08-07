@@ -6,9 +6,9 @@ import random
 
 
 # Define paths
-dataset_path = os.path.join('data', 'dataset')  # Path to your dataset
-train_path = os.path.join('data', 'train')  # Path to the training folder
-val_path = os.path.join('data', 'val')   # Path to the validation folder
+dataset_path = os.path.join('../../data', 'dataset')  # Path to your dataset
+train_path = os.path.join('../../data', 'train')  # Path to the training folder
+val_path = os.path.join('../../data', 'val')   # Path to the validation folder
 
 
 # Define the ratio for splitting the dataset
