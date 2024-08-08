@@ -1,9 +1,7 @@
 notebooks/data/occurrence.txt
 notebooks/data/multimedia.txt
 notebooks/data/dataset/*
-
-notebooks/data/train/*
-notebooks/data/val/*
+notebooks/data/output/*
 **.cache
 
 runs/*
