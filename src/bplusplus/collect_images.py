@@ -1,8 +1,6 @@
-import csv
 import os
 import random
 
-import pandas as pd
 import pygbif
 import requests
 
@@ -12,16 +10,16 @@ class Occurrence:
         self.__dict__.update(kwargs)
 
 #TODO add back support for fetching from dataset (or csvs)
-def collect_images(scientificNames: list[str], images_per_species: int, output_directory: str):
+def collect_images(scientific_names: list[str], images_per_species: int, output_directory: str):
     __create_folders(
-        names=scientificNames,
+        names=scientific_names,
         directory=output_directory
     )
 
     print("Beginning to collect images from GBIF...")
-    for name in scientificNames:
+    for name in scientific_names:
         print(f"Collecting images for {name}")
-        occurrences = _fetch_occurrences(scientificName=name, totalLimit=10000)
+        occurrences = _fetch_occurrences(scientific_name=name, totalLimit=10000)
         print(f"{name} : {len(occurrences)} occurrences fetched, will sample for {images_per_species}")
 
         #TODO: filter for images then sample
@@ -43,26 +41,26 @@ def collect_images(scientificNames: list[str], images_per_species: int, output_d
                 print(f"Image URL not found for {occurrence.key}...")
 
 
-def _fetch_occurrences(scientificName: str, totalLimit: int) -> list[Occurrence]:
+def _fetch_occurrences(scientific_name: str, totalLimit: int) -> list[Occurrence]:
     return __next_batch_for_species(
-        scientificName=scientificName,
-        totalLimit=totalLimit,
+        scientific_name=scientific_name,
+        total_limit=totalLimit,
         offset=0,
         current=[]
     ) 
 
-def __next_batch_for_species(scientificName: str, totalLimit: int, offset: int, current: list[Occurrence]) -> list[Occurrence]:
-        search = pygbif.occurrences.search(scientificName=scientificName, limit=totalLimit, offset=offset, mediaType=["StillImage"])
+def __next_batch_for_species(scientific_name: str, total_limit: int, offset: int, current: list[Occurrence]) -> list[Occurrence]:
+        search = pygbif.occurrences.search(scientificName=scientific_name, limit=total_limit, offset=offset, mediaType=["StillImage"])
         results = search["results"]
         occurrences = list(map(lambda x: Occurrence(**x), results))
-        if search["endOfRecords"] or len(current) >= totalLimit:
+        if search["endOfRecords"] or len(current) >= total_limit:
             return current + occurrences
         else:
             offset = search["offset"]
             count = search["limit"] # this seems to be returning the count, and `count` appears to be returning the total number of results returned by the search
             return __next_batch_for_species(
-                scientificName=scientificName,
-                totalLimit=totalLimit,
+                scientific_name=scientific_name,
+                total_limit=total_limit,
                 offset=offset + count,
                 current=current + occurrences
             )

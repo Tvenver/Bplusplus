@@ -9,7 +9,6 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = "^3.9.0"
 requests = "2.25.1"
-pandas = "2.1.4"
 ultralytics = "8.0.195"
 pygbif = "^0.6.4"
 
