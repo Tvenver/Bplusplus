@@ -37,7 +37,6 @@ def collect_images(names_file: str, occurrence_file: str, multimedia_file:str, o
     #Step 1.b.: Load in links to multimedia, leftjoin with filtered occurence data
     #df1 = pd.read_table(os.path.join('data','multimedia.txt'), chunksize=batch_size)
     df1 = pd.read_table(multimedia_file, chunksize=batch_size)
-    folders = [f for f in os.listdir(output_directory) if os.path.isdir(os.path.join(output_directory, f))]
     df2 = final_df
 
     # Step 3: Iterate over the chunks and left join them
