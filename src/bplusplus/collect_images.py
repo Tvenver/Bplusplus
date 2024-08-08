@@ -2,7 +2,16 @@ import csv
 import os
 
 import pandas as pd
+import pygbif
 import requests
+
+
+class Occurrence:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+# def collect_images(species: list[str], training_size: int, multimedia_file: str, output_directory: str):
+#     pass
 
 #Step 0: create folders to store images inside, names are based on a .csv file where each row contains one specie name
 
@@ -17,11 +26,20 @@ def collect_images(names_file: str, occurrence_file: str, multimedia_file:str, o
     #set variables
     batch_size = 100000
 
+    
+
     #specifiy path to occurence.txt file
     csv_reader = pd.read_table(occurrence_file, chunksize=batch_size)
     folders = __folders_in_directory(output_directory)
     col = ['gbifID', 'species']
     final_df = pd.DataFrame()  # Initialize the final DataFrame
+
+    occurrences: dict[str, list[Occurrence]] = {}
+
+
+    for name in folders:
+        occurrences[name] = _start_fetching_species(scientificName=name, totalLimit=1234)
+        print(f"{name} : {len(occurrences[name])} occurrences")
 
     # Iterate through the batches
     for batch_df in csv_reader:
@@ -67,6 +85,34 @@ def collect_images(names_file: str, occurrence_file: str, multimedia_file:str, o
 
     df.apply(lambda row: __down_image(row['identifier'], row['species'], row['ID_name']), axis=1)
 
+
+
+def _start_fetching_species(scientificName: str, totalLimit: int) -> list[Occurrence]:
+    return __next_batch_for_species(
+        scientificName=scientificName,
+        totalLimit=totalLimit,
+        offset=0,
+        current=[]
+    ) 
+
+def __next_batch_for_species(scientificName: str, totalLimit: int, offset: int, current: list[Occurrence]) -> list[Occurrence]:
+        search = pygbif.occurrences.search(scientificName=scientificName, limit=totalLimit, offset=offset)
+        print(search)
+        print(len(current))
+        if search["endOfRecords"] or len(current) >= totalLimit:
+            return current
+        else:
+            offset = search["offset"]
+            results = search["results"]
+            count = search["limit"] # this seems to be returning the count, and `count` appears to be returning the total number of results returned by the search
+            occurrences = list(map(lambda x: Occurrence(**x), results))
+            return __next_batch_for_species(
+                scientificName=scientificName,
+                totalLimit=totalLimit,
+                offset=offset + count,
+                current=current + occurrences
+            )
+
 # Step 1: Define a function to perform the left join on a specific chunk
 def __left_join_chunk(chunk1, chunk2, key_column):
     return pd.merge(chunk1, chunk2, on=key_column, how='left')
@@ -108,3 +154,4 @@ def __create_folders_from_csv(csv_file, directory_path):
             folder_name = os.path.join(directory_path, name)
             # Create a folder with the name from the CSV
             os.makedirs(folder_name, exist_ok=True)
+
