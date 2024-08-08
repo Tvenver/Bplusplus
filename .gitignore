@@ -6,6 +6,7 @@ notebooks/data/train/*
 notebooks/data/val/*
 **.cache
 
+runs/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
