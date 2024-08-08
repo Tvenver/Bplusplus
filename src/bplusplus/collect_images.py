@@ -10,7 +10,7 @@ class Occurrence:
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
 
-# def collect_images(species: list[str], training_size: int, multimedia_file: str, output_directory: str):
+# def collect_images(scientificNames: list[str], images_per_species: int, multimedia_file: str, output_directory: str):
 #     pass
 
 #Step 0: create folders to store images inside, names are based on a .csv file where each row contains one specie name
@@ -38,8 +38,9 @@ def collect_images(names_file: str, occurrence_file: str, multimedia_file:str, o
 
 
     for name in folders:
-        occurrences[name] = _start_fetching_species(scientificName=name, totalLimit=1234)
+        occurrences[name] = _start_fetching_species(scientificName=name, totalLimit=15)
         print(f"{name} : {len(occurrences[name])} occurrences")
+        print(f"{occurrences[name][0].media[0]["identifier"]}")
 
     # Iterate through the batches
     for batch_df in csv_reader:
@@ -96,7 +97,7 @@ def _start_fetching_species(scientificName: str, totalLimit: int) -> list[Occurr
     ) 
 
 def __next_batch_for_species(scientificName: str, totalLimit: int, offset: int, current: list[Occurrence]) -> list[Occurrence]:
-        search = pygbif.occurrences.search(scientificName=scientificName, limit=totalLimit, offset=offset)
+        search = pygbif.occurrences.search(scientificName=scientificName, limit=totalLimit, offset=offset, mediaType=["StillImage"])
         print(search)
         print(len(current))
         if search["endOfRecords"] or len(current) >= totalLimit:
