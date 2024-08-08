@@ -1,5 +1,6 @@
 notebooks/data/occurrence.txt
 notebooks/data/multimedia.txt
+notebooks/data/dataset/*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
