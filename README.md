@@ -22,7 +22,7 @@ You have created a YOLOv8 model for image classification.
 
 To use the pretrained model:
 There is also a pretrained YOLOv8 classification model, containing 2584 species, included in this repo under B++ CV Model. The included species are listed in a separate file.
-1. Download from the Google Drive link listed in B++ CV Model
+1. Download the pretrained model from the Google Drive link listed in the folder B++ CV Model
 2. Take the run_model.py script, specify the path to the downloaded .pt file, and run the model.
 
 # Citation
