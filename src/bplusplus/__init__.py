@@ -1,2 +1,2 @@
 from .collect_images import collect_images
-from .trainer import train_validate
+from .train_validate import train_validate

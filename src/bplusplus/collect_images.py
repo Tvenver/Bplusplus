@@ -7,16 +7,17 @@ import requests
 #Step 0: create folders to store images inside, names are based on a .csv file where each row contains one specie name
 
 def create_folders_from_csv(csv_file, directory_path):
+    print("create folders")
     # Check if the folder path exists, if not, create it
     if not os.path.exists(directory_path):
         os.makedirs(directory_path)
-
     # Open the CSV file and read the names
     with open(csv_file, 'r') as file:
         csv_reader = csv.reader(file)
         next(csv_reader)  # Skip the header
         for row in csv_reader:
             name = row[0].strip()  # Assuming the name is in the first column
+            print("found this name in csv")
             print(name)
             folder_name = os.path.join(directory_path, name)
             # Create a folder with the name from the CSV
@@ -25,6 +26,8 @@ def create_folders_from_csv(csv_file, directory_path):
 
 def collect_images(names_file: str, occurrence_file: str, multimedia_file:str, output_directory: str):
     # Provide the path to your CSV file and the folder where you want to create subfolders
+
+    print("collect images start")
 
     create_folders_from_csv(names_file, output_directory)
 
