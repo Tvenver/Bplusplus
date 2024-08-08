@@ -1,7 +1,8 @@
-import requests
-import os
-import pandas as pd
 import csv
+import os
+
+import pandas as pd
+import requests
 
 #Step 0: create folders to store images inside, names are based on a .csv file where each row contains one specie name
 
@@ -22,7 +23,7 @@ def create_folders_from_csv(csv_file, directory_path):
             os.makedirs(folder_name, exist_ok=True)
 
 
-def collect_images(names_file, occurrence_file, multimedia_file, output_directory):
+def collect_images(names_file: str, occurrence_file: str, multimedia_file:str, output_directory: str):
     # Provide the path to your CSV file and the folder where you want to create subfolders
 
     create_folders_from_csv(names_file, output_directory)
