@@ -5,6 +5,8 @@ This repo can be used to quickly generate YOLOv8 models for biodiversity monitor
 All code is tested on Windows 10 and Python 3.11, without GPU. GPU would obviously accelerate the below steps, Ultralytics should automatically select the available GPU if there is any.
 
 # How does it work?
+
+To create your own custom CV model:
 1. Input names (scientific names) in the names.csv file, in the data folder
 2. Download the GBIF repository of your choosing, or download a prepared dataset linking to 16M images of many insect species: https://doi.org/10.15468/dl.dk9czq
 3. Update the path in collect_images.py on line 35 and line 53, to route to the unzipped GBIF downloaded files.
@@ -18,7 +20,10 @@ You have created a YOLOv8 model for image classification.
 
 ![Figure 9](https://github.com/user-attachments/assets/a01f513b-0609-412d-a633-3aee1e5dded6)
 
-There is also a pretrained YOLOv8 classification model, containing 2584 species, included in this repo under B++ CV Model.
+To use the pretrained model:
+There is also a pretrained YOLOv8 classification model, containing 2584 species, included in this repo under B++ CV Model. The included species are listed in a separate file.
+1. Download from the Google Drive link listed in B++ CV Model
+2. Take the run_model.py script, specify the path to the downloaded .pt file, and run the model.
 
 # Citation
 
