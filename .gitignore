@@ -2,6 +2,11 @@ notebooks/data/occurrence.txt
 notebooks/data/multimedia.txt
 notebooks/data/dataset/*
 
+notebooks/data/train/*
+notebooks/data/val/*
+**.cache
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
