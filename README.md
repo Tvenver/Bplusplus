@@ -4,6 +4,11 @@ This repo can be used to quickly generate YOLOv8 models for biodiversity monitor
 
 All code is tested on macOS and Python 3.12, without GPU. GPU would obviously accelerate the below steps, Ultralytics should automatically select the available GPU if there is any.
 
+## GitHub
+https://github.com/Tvenver/Bplusplus
+
+## PyPI
+https://pypi.org/project/bplusplus/
 
 # How does it work?
 
