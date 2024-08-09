@@ -56,6 +56,13 @@ bplusplus.build_model(
     model_output_folder=os.path.join('model')
 )
 ```
+
+# Pending Improvements
+
+* The Ultralytics parameters should be surfaced to the user of the package so they have more control over the training process.
+* The GBIF API documentation claims that you can filter on a dataset in your search, however it does not work in my current testing. This would be nice to allow users to create datasets on the GBIF website then pass that DOI directly here, so may warrant a closer look.
+
+
 # Citation
 
 All information in this GitHub is available under MIT license, as long as credit is given to the authors.
