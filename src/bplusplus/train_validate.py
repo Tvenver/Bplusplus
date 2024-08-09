@@ -54,8 +54,6 @@ def train_validate(groups: list[str], dataset_path: str, output_directory: str, 
     model = YOLO(os.path.join(output_directory,'yolov8n-cls.pt'))
     #
     #define parameters for YOLO training, be aware of epoch, batch, and imgsz, to not exceed system requirements (memory, CPU, GPU...)
-    #Folder for training *bplusplus/data/train
-    #Folder for validation *bplusplus/data/val
     #Specify path to folder where the val and train folder is located
     data = output_directory
     results = model.train(data=data, epochs=5, batch=16, imgsz=224, project=output_directory)
