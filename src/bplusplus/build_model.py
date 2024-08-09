@@ -1,44 +1,38 @@
 import os
+import shutil
+import tempfile
+from typing import Any
 
-#TODO implement with tempfile
+from .collect_images import Group, collect_images
+from .train_validate import train_validate
 
 
-# def build_model(scientific_names: list[str], images_per_species: int) -> str:
+def build_model(group_by_key: Group, search_parameters: dict[str, Any], images_per_group: int, model_output_folder: str):
+    try:
+        # Create a temporary directory
+        temp_dir = tempfile.mkdtemp()
+        # Do more work...
+        print(f"Temporary directory path: {temp_dir}")
+
+        groups = search_parameters.get(group_by_key.value, list[str])
+
+        collect_images (
+            group_by_key=group_by_key, 
+            search_parameters=search_parameters, 
+            images_per_group=images_per_group, 
+            output_directory=temp_dir
+        )
+        
+        train_validate(
+            groups=groups, 
+            dataset_path=temp_dir, 
+            output_directory=model_output_folder
+        )
+
+    finally:
+        # Clean up the temporary directory
+        if temp_dir and os.path.exists(temp_dir):
+            shutil. rmtree (temp_dir)
+            print(f"Cleaned up temporary directory: {temp_dir}")
     
-#     collect_images(
-#         scientific_names=scientific_names, 
-#         images_per_species=images_per_species
-#     )
-
-
-
-
-# import tempfile
-# import os
-# import shutil
-
-# temp_dir = None
-
-# try:
-#     # Create a temporary directory
-#     temp_dir = tempfile.mkdtemp()
-    
-#     # Use the temporary directory
-#     file_path = os.path.join(temp_dir, "example.txt")
-    
-#     with open(file_path, "w") as f:
-#         f.write("Hello, temporary world!")
-    
-#     # Read the file content
-#     with open(file_path, "r") as f:
-#         content = f.read()
-#         print(f"File content: {content}")
-    
-#     # Do more work...
-#     print(f"Temporary directory path: {temp_dir}")
-
-# finally:
-#     # Clean up the temporary directory
-#     if temp_dir and os.path.exists(temp_dir):
-#         shutil.rmtree(temp_dir)
-#         print(f"Cleaned up temporary directory: {temp_dir}")
+    temp_dir = None

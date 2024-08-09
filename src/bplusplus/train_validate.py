@@ -5,14 +5,11 @@ import shutil
 from ultralytics import YOLO
 
 
-def train_validate(scientificNames: list[str], dataset_path: str, output_directory: str):
-# def train_validate(data_directory: str, dataset_path: str, train_path: str, val_path: str):
-    # Define the ratio for splitting the dataset
-    split_ratio = 0.8  # 80% for training, 20% for validation
+#split ratio defaults to 80% training 20% validation
+def train_validate(groups: list[str], dataset_path: str, output_directory: str, split_ratio: float = 0.8):
 
     train_path = os.path.join(output_directory, 'train')  # Path to the training folder
     val_path = os.path.join(output_directory, 'val')   # Path to the validation folder
-
 
     # Create training and validation directories if they don't exist
     os.makedirs(train_path, exist_ok=True)
@@ -20,8 +17,8 @@ def train_validate(scientificNames: list[str], dataset_path: str, output_directo
 
     # Walk through the dataset directory
     # for root, dirs, files in os.walk(dataset_path):
-    for species in scientificNames:
-        dataset_folder = os.path.join(dataset_path, species)
+    for group in groups:
+        dataset_folder = os.path.join(dataset_path, group)
         images = __files_in_folder(folder=dataset_folder)
 
         # Shuffle the images
@@ -35,8 +32,8 @@ def train_validate(scientificNames: list[str], dataset_path: str, output_directo
         val_images = images[split_index:]
 
         # Create destination folders if they don't exist
-        train_label_path = os.path.join(train_path, species)
-        val_label_path = os.path.join(val_path, species)
+        train_label_path = os.path.join(train_path, group)
+        val_label_path = os.path.join(val_path, group)
         os.makedirs(train_label_path, exist_ok=True)
         os.makedirs(val_label_path, exist_ok=True)
 

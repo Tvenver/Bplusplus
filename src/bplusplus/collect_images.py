@@ -43,7 +43,8 @@ def collect_images(group_by_key: Group, search_parameters: dict[str, Any], image
             __down_image(
                 url=occurrence.image_url,
                 group=group,
-                ID_name=occurrence.key
+                ID_name=occurrence.key,
+                folder=output_directory
             )
     
     print("Finished collecting images.")
@@ -76,8 +77,8 @@ def __next_batch(parameters: dict[str, Any], total_limit: int, offset: int, curr
             )
 
 #function to download insect images
-def __down_image(url: str, group: str, ID_name: str):
-    directory = os.path.join('data/dataset', f"{group}")
+def __down_image(url: str, group: str, ID_name: str, folder: str):
+    directory = os.path.join(folder, f"{group}")
     os.makedirs(directory, exist_ok=True)
     image_response = requests.get(url)
     image_name = f"{group}{ID_name}.jpg"  # You can modify the naming convention as per your requirements
