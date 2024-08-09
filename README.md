@@ -2,20 +2,51 @@
 
 This repo can be used to quickly generate YOLOv8 models for biodiversity monitoring, relying on Ultralytics and a GBIF dataset.
 
-All code is tested on Windows 10 and Python 3.11, without GPU. GPU would obviously accelerate the below steps, Ultralytics should automatically select the available GPU if there is any.
+All code is tested on macOS and Python 3.12, without GPU. GPU would obviously accelerate the below steps, Ultralytics should automatically select the available GPU if there is any.
+
 
 # How does it work?
-1. Input names (scientific names) in the names.csv file, in the data folder
-2. Download the GBIF repository of your choosing, or download a prepared dataset linking to 16M images of many insect species: https://doi.org/10.15468/dl.dk9czq
-3. Update the path in collect_images.py on line 35 and line 53, to route to the unzipped GBIF downloaded files.
-4. In collect_images.py, consider activating the sampling function, to reduce the number of images to download per species - in the case of many insect species, the download will take longer.
-5. run collect_images.py, this fetches the names, iterates through them, and attempts to download images from a GBIF data repository.
-6. As an example, for about 8 insect species, ending up with 4000 images, the entire operation might take +-20 minutes, depending on your internet speed and hardware.
-7. run train_validate.py, this shuffles the images into a train and validation set, and Ultralytics takes care of the training.
-8. You can tweak various parameters for the training, if you want to, please visit the Ultralytics YOLOv8 documentation for more information.
+1. Select scientific names you want to train your model on. For now, only scientific names are supported as training categories.
+2. Select the parameters you want to use to filter your dataset (using the [parameters available in the GBIF Occurrence Search API](https://techdocs.gbif.org/en/openapi/v1/occurrence)).
+3. Decide how many images you want to use for training and validation per category.
+4. Select a directory to output the model information.
+5. Pass the above information to the `build_model` function.
 
-You have created a YOLOv8 model for image classification.
+You have created a YOLOv8 model for bug classification.
 
+The training and validation is done using Ultralytics. Please visit the Ultralytics YOLOv8 documentation for more information.
+
+# Example Usage
+## Using search options
+```python
+import os
+import bplusplus
+from typing import Any
+
+names = [
+    "Nabis rugosus", 
+    "Forficula auricularia",
+    "Calosoma inquisitor",
+    "Bombus veteranus",
+    "Glyphotaelius pellucidus",
+    "Notoxus monoceros",
+    "Cacoxenus indagator",
+    "Chorthippus mollis",
+    "Trioza remota"
+]
+
+search: dict[str, Any] = {
+    "scientificName": names,
+    "country": ["US", "NL"]
+}
+
+bplusplus.build_model(
+    group_by_key=bplusplus.Group.scientificName,
+    search_parameters=search, 
+    images_per_group=150,
+    model_output_folder=os.path.join('model')
+)
+```
 # Citation
 
 All information in this GitHub is available under MIT license, as long as credit is given to the authors.
