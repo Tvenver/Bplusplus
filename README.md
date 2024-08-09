@@ -6,6 +6,9 @@ All code is tested on macOS and Python 3.12, without GPU. GPU would obviously ac
 
 
 # How does it work?
+
+![Figure 9](https://github.com/user-attachments/assets/a01f513b-0609-412d-a633-3aee1e5dded6)
+
 1. Select scientific names you want to train your model on. For now, only scientific names are supported as training categories.
 2. Select the parameters you want to use to filter your dataset (using the [parameters available in the GBIF Occurrence Search API](https://techdocs.gbif.org/en/openapi/v1/occurrence)).
 3. Decide how many images you want to use for training and validation per category.
@@ -15,6 +18,12 @@ All code is tested on macOS and Python 3.12, without GPU. GPU would obviously ac
 You have created a YOLOv8 model for bug classification.
 
 The training and validation is done using Ultralytics. Please visit the Ultralytics YOLOv8 documentation for more information.
+
+# Pretrained Model
+
+There is also a pretrained YOLOv8 classification model, containing 2584 species, included in this repo under B++ CV Model. The included species are listed in a separate file.
+1. Download the pretrained model from the Google Drive link listed in the folder B++ CV Model
+2. Take the run_model.py script, specify the path to the downloaded .pt file, and run the model.
 
 # Example Usage
 ## Using search options
