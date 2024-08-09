@@ -23,7 +23,7 @@ The training and validation is done using Ultralytics. Please visit the Ultralyt
 
 There is also a pretrained YOLOv8 classification model, containing 2584 species, included in this repo under B++ CV Model. The included species are listed in a separate file.
 1. Download the pretrained model from the Google Drive link listed in the folder B++ CV Model
-2. Take the run_model.py script, specify the path to the downloaded .pt file, and run the model.
+2. Take the notebooks/run_model.py script, specify the path to the downloaded .pt file, and run the model.
 
 # Example Usage
 ## Using search options
