@@ -58,7 +58,7 @@ def train_validate(groups: list[str], dataset_path: str, output_directory: str, 
     #Folder for validation *bplusplus/data/val
     #Specify path to folder where the val and train folder is located
     data = output_directory
-    results = model.train(data=data, epochs=5, batch=16, imgsz=224, save_dir=output_directory)
+    results = model.train(data=data, epochs=5, batch=16, imgsz=224, project=output_directory)
 
     #batch is adjusted to 1 to prevent a resizing bug - in training this bug doesnt emerge. A work around for larger batch size could be a resizing step in advance.
     model.val(batch=1)
