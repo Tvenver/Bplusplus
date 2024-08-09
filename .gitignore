@@ -2,6 +2,7 @@ notebooks/data/occurrence.txt
 notebooks/data/multimedia.txt
 notebooks/data/dataset/*
 notebooks/data/output/*
+notebooks/model/**
 **.cache
 
 runs/*
