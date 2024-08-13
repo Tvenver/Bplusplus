@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "bplusplus"
-version = "0.1.0"
+version = "0.1.1"
 description = "A simple method to create AI models for biodiversity"
 authors = ["Titus Venverloo <tvenver@mit.edu>", "Deniz Aydemir <deniz@aydemir.us>"]
 license = "MIT"
@@ -13,17 +13,10 @@ ultralytics = "8.0.195"
 pygbif = "^0.6.4"
 validators = "^0.33.0"
 
-
 [tool.poetry.group.dev.dependencies]
 jupyter = "^1.0.0"
 ipykernel = "^6.29.5"
-poetry-dynamic-versioning = "^1.4.0"
 
 [build-system]
-requires = ["poetry-core>=1.0.0", "poetry-dynamic-versioning"]
-build-backend = "poetry_dynamic_versioning.backend"
-
-[tool.poetry-dynamic-versioning]
-enable = true
-vcs = "git"
-style = "semver"
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
