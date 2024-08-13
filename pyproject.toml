@@ -27,3 +27,4 @@ build-backend = "poetry.core.masonry.api"
 enable = true
 vcs = "git"
 style = "semver"
+pattern = "v(?P<base>\\d+\\.\\d+\\.\\d+)"
