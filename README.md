@@ -1,6 +1,6 @@
 # B++ repository
 
-[![DOI](https://zenodo.org/badge/765250194.svg)](https://zenodo.org/badge/latestdoi/) 
+[![DOI](https://zenodo.org/badge/765250194.svg)](https://zenodo.org/badge/latestdoi/765250194) 
 [![PyPI version](https://badge.fury.io/py/bplusplus.svg)](https://badge.fury.io/py/bplusplus)
 
 This repo can be used to quickly generate YOLOv8 models for biodiversity monitoring, relying on Ultralytics and a GBIF dataset.
