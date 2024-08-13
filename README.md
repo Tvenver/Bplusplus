@@ -1,5 +1,8 @@
 # B++ repository
 
+[![DOI](https://zenodo.org/badge/765250194.svg)](https://zenodo.org/badge/latestdoi/) 
+[![PyPI version](https://badge.fury.io/py/bplusplus.svg)](https://badge.fury.io/py/bplusplus)
+
 This repo can be used to quickly generate YOLOv8 models for biodiversity monitoring, relying on Ultralytics and a GBIF dataset.
 
 All code is tested on macOS and Python 3.12, without GPU. GPU would obviously accelerate the below steps, Ultralytics should automatically select the available GPU if there is any.
