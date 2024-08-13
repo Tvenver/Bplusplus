@@ -10,8 +10,6 @@ All code is tested on macOS and Python 3.12, without GPU. GPU would obviously ac
 ## GitHub
 https://github.com/Tvenver/Bplusplus
 
-## PyPI
-https://pypi.org/project/bplusplus/
 
 # How does it work?
 
