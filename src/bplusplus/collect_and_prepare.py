@@ -7,7 +7,7 @@ import validators
 from .collect_images import collect_images, Group
 import tempfile
 from pathlib import Path
-from yolov5detect.detect import run
+from .yolov5detect.detect import run
 import shutil
 from PIL import Image, ImageDraw, ImageFont
 from collections import defaultdict
