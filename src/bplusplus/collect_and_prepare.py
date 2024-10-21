@@ -14,8 +14,6 @@ from collections import defaultdict
 from prettytable import PrettyTable
 import matplotlib.pyplot as plt
 
-weight_download_url="https://drive.google.com/file/d/1zZU3b6bLqTHLuxuFWt80wrfJsVROJuNP/view?usp=sharing"
-
 def collect_and_prepare(group_by_key: Group, search_parameters: dict[str, Any], images_per_group: int, output_directory: str):
 
     groups: list[str] = search_parameters[group_by_key.value]
@@ -108,22 +106,33 @@ def collect_and_prepare(group_by_key: Group, search_parameters: dict[str, Any], 
 
         __count_classes_and_output_table(output_directory, output_directory / 'class_idx.txt' )
 
-def __download_file_from_google_drive(url, destination):
-    if destination.exists():
-        print(f"{destination} already exists. Skipping download.")
-        return
+def __download_file_from_google_drive(drive_url, destination):
+    # Extract the file ID from the Google Drive URL
+    file_id = drive_url.split('/d/')[1].split('/')[0]
+    URL = "https://drive.google.com/uc?export=download"
 
-    print(f"{destination} does not exist. Downloading...")
+    # Send a request to Google Drive to start the file download
+    with requests.Session() as session:
+        response = session.get(URL, params={'id': file_id}, stream=True)
+        
+        # Get confirmation token if required (for large files)
+        token = None
+        for key, value in response.cookies.items():
+            if key.startswith('download_warning'):
+                token = value
 
-    response = requests.get(url, stream=True)
-    if response.status_code == 200:
-        with open(destination, 'wb') as f:
-            for chunk in response.iter_content(8192): 
-                if chunk:
+        if token:
+            # Reattempt download with confirmation token
+            response = session.get(URL, params={'id': file_id, 'confirm': token}, stream=True)
+
+        # Save the file content
+        CHUNK_SIZE = 32768
+        with open(destination, "wb") as f:
+            for chunk in response.iter_content(CHUNK_SIZE):
+                if chunk:  # Filter out keep-alive new chunks
                     f.write(chunk)
+
         print(f"File downloaded successfully and saved at: {destination}")
-    else:
-        print(f"Failed to download file. Status code: {response.status_code}")
 
 def _fetch_occurrences(group_key: str, group_value: str, parameters: dict[str, Any], totalLimit: int) -> list[dict[str, Any]]:
     parameters[group_key] = group_value
