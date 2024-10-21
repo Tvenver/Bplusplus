@@ -107,29 +107,24 @@ def collect_and_prepare(group_by_key: Group, search_parameters: dict[str, Any], 
         __count_classes_and_output_table(output_directory, output_directory / 'class_idx.txt' )
 
 def __download_file_from_google_drive(drive_url, destination):
-    # Extract the file ID from the Google Drive URL
     file_id = drive_url.split('/d/')[1].split('/')[0]
     URL = "https://drive.google.com/uc?export=download"
 
-    # Send a request to Google Drive to start the file download
     with requests.Session() as session:
         response = session.get(URL, params={'id': file_id}, stream=True)
         
-        # Get confirmation token if required (for large files)
         token = None
         for key, value in response.cookies.items():
             if key.startswith('download_warning'):
                 token = value
 
         if token:
-            # Reattempt download with confirmation token
             response = session.get(URL, params={'id': file_id, 'confirm': token}, stream=True)
 
-        # Save the file content
         CHUNK_SIZE = 32768
         with open(destination, "wb") as f:
             for chunk in response.iter_content(CHUNK_SIZE):
-                if chunk:  # Filter out keep-alive new chunks
+                if chunk:  
                     f.write(chunk)
 
         print(f"File downloaded successfully and saved at: {destination}")
