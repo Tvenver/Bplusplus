@@ -7,7 +7,7 @@ import validators
 from .collect_images import collect_images, Group
 import tempfile
 from pathlib import Path
-from src.yolov5detect import detect
+from yolov5detect.detect import run
 import shutil
 from PIL import Image, ImageDraw, ImageFont
 from collections import defaultdict
@@ -67,7 +67,7 @@ def collect_and_prepare(group_by_key: Group, search_parameters: dict[str, Any], 
         yaml_path = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), '../yolov5detect/insect.yaml')))
         weights_path = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), '../yolov5detect/acc94.pt')))
 
-        detect.run(source=images_path, data=yaml_path, weights=weights_path, save_txt=True, project=temp_dir_path)
+        run(source=images_path, data=yaml_path, weights=weights_path, save_txt=True, project=temp_dir_path)
 
         __delete_orphaned_images_and_inferences(images_path, inference_path, labels_path)
         __delete_invalid_txt_files(images_path, inference_path, labels_path)
