@@ -64,8 +64,9 @@ def collect_and_prepare(group_by_key: Group, search_parameters: dict[str, Any], 
 
         __delete_corrupted_images(images_path)
 
-        yaml_path = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), '../yolov5detect/insect.yaml')))
-        weights_path = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), '../yolov5detect/acc94.pt')))
+        current_dir = Path(os.path.dirname(__file__))
+        yaml_path = current_dir / 'yolov5detect' / 'insect.yaml'
+        weights_path = current_dir / 'yolov5detect' / 'acc94.pt'
 
         run(source=images_path, data=yaml_path, weights=weights_path, save_txt=True, project=temp_dir_path)
 
