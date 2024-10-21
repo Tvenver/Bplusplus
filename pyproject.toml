@@ -2,7 +2,7 @@
 name = "bplusplus"
 version = "0.1.2"
 description = "A simple method to create AI models for biodiversity, with collect and prepare pipeline"
-authors = ["Titus Venverloo <tvenver@mit.edu>", "Deniz Aydemir <deniz@aydemir.us>", , "Orlando Closs <orlando.closs@wur.nl>"]
+authors = ["Titus Venverloo <tvenver@mit.edu>", "Deniz Aydemir <deniz@aydemir.us>", "Orlando Closs <orlando.closs@wur.nl>"]
 license = "MIT"
 readme = "README.md"
 
