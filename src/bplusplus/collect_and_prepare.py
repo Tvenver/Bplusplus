@@ -14,6 +14,8 @@ from collections import defaultdict
 from prettytable import PrettyTable
 import matplotlib.pyplot as plt
 
+weight_download_url="https://drive.google.com/file/d/1zZU3b6bLqTHLuxuFWt80wrfJsVROJuNP/view?usp=sharing"
+
 def collect_and_prepare(group_by_key: Group, search_parameters: dict[str, Any], images_per_group: int, output_directory: str):
 
     groups: list[str] = search_parameters[group_by_key.value]
@@ -21,6 +23,8 @@ def collect_and_prepare(group_by_key: Group, search_parameters: dict[str, Any], 
     class_mapping={}
 
     output_directory = Path(output_directory)
+
+    weight_download_url="https://drive.google.com/file/d/1zZU3b6bLqTHLuxuFWt80wrfJsVROJuNP/view?usp=sharing"
 
     with tempfile.TemporaryDirectory() as temp_dir:
 
@@ -64,9 +68,11 @@ def collect_and_prepare(group_by_key: Group, search_parameters: dict[str, Any], 
 
         __delete_corrupted_images(images_path)
 
-        current_dir = Path(os.path.dirname(__file__))
+        current_dir = Path(__file__).resolve().parent
         yaml_path = current_dir / 'yolov5detect' / 'insect.yaml'
         weights_path = current_dir / 'yolov5detect' / 'acc94.pt'
+
+        __download_file_from_google_drive(weight_download_url, weights_path)
 
         run(source=images_path, data=yaml_path, weights=weights_path, save_txt=True, project=temp_dir_path)
 
@@ -101,7 +107,23 @@ def collect_and_prepare(group_by_key: Group, search_parameters: dict[str, Any], 
         __split_background_images(temp_dir_path / "Plantae", output_directory)
 
         __count_classes_and_output_table(output_directory, output_directory / 'class_idx.txt' )
-    
+
+def __download_file_from_google_drive(url, destination):
+    if destination.exists():
+        print(f"{destination} already exists. Skipping download.")
+        return
+
+    print(f"{destination} does not exist. Downloading...")
+
+    response = requests.get(url, stream=True)
+    if response.status_code == 200:
+        with open(destination, 'wb') as f:
+            for chunk in response.iter_content(8192): 
+                if chunk:
+                    f.write(chunk)
+        print(f"File downloaded successfully and saved at: {destination}")
+    else:
+        print(f"Failed to download file. Status code: {response.status_code}")
 
 def _fetch_occurrences(group_key: str, group_value: str, parameters: dict[str, Any], totalLimit: int) -> list[dict[str, Any]]:
     parameters[group_key] = group_value
