@@ -456,7 +456,7 @@ def __count_classes_and_output_table(output_directory: Path, class_idx_file: Pat
         return class_counts
 
     splits = ['train', 'test', 'valid']
-    class_ids = read_class_ids(class_ids_file)
+    class_ids = read_class_ids(class_idx_file)
     total_counts = defaultdict(int)
 
     table = PrettyTable()
@@ -495,26 +495,41 @@ def update_labels(class_mapping: dict, labels_path: Path) -> dict:
     Returns:
         dict: A dictionary mapping class names to class indices.
     """
-    class_idxs = {}
-    current_idx = 0
+    class_index_mapping = {}
+    class_index_definition = {}
 
-    for class_name, image_names in class_mapping.items():
-        if class_name not in class_idxs:
-            class_idxs[class_name] = current_idx
-            current_idx += 1
+    for idx, (class_name, images) in enumerate(class_mapping.items()):
+        class_index_definition[idx] = class_name
+        for image_name in images:
+            class_index_mapping[image_name] = idx
 
-        for image_name in image_names:
-            label_file = labels_path / f"{Path(image_name).stem}.txt"
-            with open(label_file, 'r') as file:
-                lines = file.readlines()
+    for txt_file in labels_path.glob("*.txt"):
+        image_name_jpg = txt_file.stem + ".jpg"
+        image_name_jpeg = txt_file.stem + ".jpeg"
 
-            with open(label_file, 'w') as file:
-                for line in lines:
-                    parts = line.strip().split()
-                    parts[0] = str(class_idxs[class_name])
-                    file.write(" ".join(parts) + "\n")
+        if image_name_jpg in class_index_mapping:
+            class_index = class_index_mapping[image_name_jpg]
+        elif image_name_jpeg in class_index_mapping:
+            class_index = class_index_mapping[image_name_jpeg]
+        else:
+            print(f"Warning: No corresponding image found for {txt_file.name}")
+            continue
 
-    return class_idxs
+        with open(txt_file, 'r') as file:
+            lines = file.readlines()
+
+        updated_lines = []
+        for line in lines:
+            parts = line.split()
+            if len(parts) > 0:
+                parts[0] = str(class_index)
+                updated_lines.append(" ".join(parts))
+
+        with open(txt_file, 'w') as file:
+            file.write("\n".join(updated_lines))
+
+    print(f"Labels updated successfully")
+    return class_index_definition
 
 def count_images_across_splits(output_directory: Path) -> int:
     """
