@@ -57,7 +57,8 @@ def prepare(input_directory: str, output_directory: str):
 
         github_release_url = 'https://github.com/Tvenver/Bplusplus/releases/download/v0.1.2/acc94.pt'
 
-        __download_file_from_github_release(github_release_url, weights_path)
+        if not weights_path.exists():
+            __download_file_from_github_release(github_release_url, weights_path)
 
         run(source=images_path, data=yaml_path, weights=weights_path, save_txt=True, project=temp_dir_path)
 
@@ -156,6 +157,19 @@ def __delete_orphaned_images_and_inferences(images_path: Path, inference_path: P
     and its corresponding inference file.
     """
 
+    for txt_file in labels_path.glob("*.txt"):
+        image_file_jpg = images_path / (txt_file.stem + ".jpg")
+        image_file_jpeg = images_path / (txt_file.stem + ".jpeg")
+        inference_file_jpg = inference_path / (txt_file.stem + ".jpg")
+        inference_file_jpeg = inference_path / (txt_file.stem + ".jpeg")
+
+        if not (image_file_jpg.exists() or image_file_jpeg.exists()):
+            print(f"Deleting {txt_file.name} - No corresponding image file")
+            txt_file.unlink()
+        elif not (inference_file_jpg.exists() or inference_file_jpeg.exists()):
+            print(f"Deleting {txt_file.name} - No corresponding inference file")
+            txt_file.unlink()
+            
     label_stems = {txt_file.stem for txt_file in labels_path.glob("*.txt")}
     image_files = list(images_path.glob("*.jpg")) + list(images_path.glob("*.jpeg"))
 
