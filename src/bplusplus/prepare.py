@@ -12,7 +12,7 @@ from collections import defaultdict
 from prettytable import PrettyTable
 import matplotlib.pyplot as plt
 import requests
-import tqdm
+from tqdm import tqdm
 
 def prepare(input_directory: str, output_directory: str):
 
