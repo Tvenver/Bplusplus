@@ -4,7 +4,7 @@ from typing import Any, Optional
 import pygbif
 import requests
 import validators
-from .collect_images import collect_images, Group
+from .collect import collect, Group
 import tempfile
 from pathlib import Path
 from .yolov5detect.detect import run
@@ -93,7 +93,7 @@ def collect_and_prepare(group_by_key: Group, search_parameters: dict[str, Any], 
             "scientificName": ["Plantae"]
         }
 
-        collect_images(
+        collect(
             group_by_key=Group.scientificName,
             search_parameters=search, 
             images_per_group=bg_images,

@@ -3,7 +3,7 @@ import shutil
 import tempfile
 from typing import Any
 
-from .collect_images import Group, collect_images
+from .collect import Group, collect
 from .train_validate import train_validate
 
 
