@@ -3,7 +3,7 @@ import random
 from typing import Any, Optional
 import requests
 import tempfile
-from .collect_images import collect_images, Group
+from .collect import Group, collect
 from pathlib import Path
 from .yolov5detect.detect import run
 import shutil
@@ -13,12 +13,26 @@ from prettytable import PrettyTable
 import matplotlib.pyplot as plt
 import requests
 from tqdm import tqdm
+import yaml
 
 def prepare(input_directory: str, output_directory: str):
 
-    '''
-    Prepare the input directory for training by deleting corrupted images and creating a class mapping.
-    '''
+    """
+    Prepares the dataset for training by performing the following steps:
+    1. Copies images from the input directory to a temporary directory.
+    2. Deletes corrupted images.
+    3. Downloads YOLOv5 weights if not already present.
+    4. Runs YOLOv5 inference to generate labels for the images.
+    5. Deletes orphaned images and inferences.
+    6. Updates labels based on class mapping.
+    7. Splits the data into train, test, and validation sets.
+    8. Counts the total number of images across all splits.
+    9. Makes a YAML configuration file for YOLOv8.
+
+    Args:
+        input_directory (str): The path to the input directory containing the images.
+        output_directory (str): The path to the output directory where the prepared dataset will be saved.
+    """
 
     input_directory = Path(input_directory)
     output_directory = Path(output_directory)
@@ -67,7 +81,7 @@ def prepare(input_directory: str, output_directory: str):
         class_idxs = update_labels(class_mapping, labels_path)
         __split_data(class_mapping, temp_dir_path, output_directory)
 
-        __save_class_idx_to_file(class_idxs, output_directory)
+        # __save_class_idx_to_file(class_idxs, output_directory)
         final_image_count = count_images_across_splits(output_directory)
         print(f"\nOut of {original_image_count} input images, {final_image_count} are eligible for detection. \nThese are saved across train, test and valid split in {output_directory}.")
         __generate_sample_images_with_detections(output_directory)
@@ -80,7 +94,7 @@ def prepare(input_directory: str, output_directory: str):
             "scientificName": ["Plantae"]
         }
 
-        collect_images(
+        collect(
             group_by_key=Group.scientificName,
             search_parameters=search, 
             images_per_group=bg_images,
@@ -91,7 +105,9 @@ def prepare(input_directory: str, output_directory: str):
 
         __split_background_images(temp_dir_path / "Plantae", output_directory)
 
-        __count_classes_and_output_table(output_directory, output_directory / 'class_idx.txt' )
+        __count_classes_and_output_table(output_directory, class_idxs)
+
+        __make_yaml_file(output_directory, class_idxs)
 
 def __delete_corrupted_images(images_path: Path):
      
@@ -423,21 +439,14 @@ def __split_background_images(background_dir: Path, output_directory: Path):
     print(f"Background data has been split: {len(train_files)} train, {len(valid_files)} valid, {len(test_files)} test")
     
 
-def __count_classes_and_output_table(output_directory: Path, class_idx_file: Path):
+def __count_classes_and_output_table(output_directory: Path, class_idxs: dict):
     """
     Counts the number of images per class and outputs a table.
 
     Args:
         output_directory (Path): The path to the output directory containing the split data.
-        class_idx_file (Path): The path to the class index file.
+        class_idxs (dict): A dictionary mapping class indices to class names.
     """
-    def read_class_ids(class_ids_file):
-        class_ids = {}
-        with open(class_ids_file, 'r') as f:
-            for line in f:
-                class_index, class_name = line.strip().split(': ')
-                class_ids[int(class_index)] = class_name
-        return class_ids
 
     def count_classes_in_split(labels_dir):
         class_counts = defaultdict(int)
@@ -456,7 +465,6 @@ def __count_classes_and_output_table(output_directory: Path, class_idx_file: Pat
         return class_counts
 
     splits = ['train', 'test', 'valid']
-    class_ids = read_class_ids(class_idx_file)
     total_counts = defaultdict(int)
 
     table = PrettyTable()
@@ -465,7 +473,7 @@ def __count_classes_and_output_table(output_directory: Path, class_idx_file: Pat
     split_counts = {split: defaultdict(int) for split in splits}
 
     for split in splits:
-        labels_dir = os.path.join(main_dir, split, 'labels')
+        labels_dir = output_directory / split / 'labels'
         if not os.path.exists(labels_dir):
             print(f"Warning: {labels_dir} does not exist, skipping {split}.")
             continue
@@ -476,14 +484,13 @@ def __count_classes_and_output_table(output_directory: Path, class_idx_file: Pat
             total_counts[class_index] += count
 
     for class_index, total in total_counts.items():
-        class_name = class_ids.get(class_index, "Background" if class_index == 'null' else f"Class {class_index}")
+        class_name = class_idxs.get(class_index, "Background" if class_index == 'null' else f"Class {class_index}")
         train_count = split_counts['train'].get(class_index, 0)
         test_count = split_counts['test'].get(class_index, 0)
         valid_count = split_counts['valid'].get(class_index, 0)
         table.add_row([class_name, class_index, train_count, test_count, valid_count, total])
 
     print(table)
-
 def update_labels(class_mapping: dict, labels_path: Path) -> dict:
     """
     Updates the labels based on the class mapping.
@@ -548,6 +555,29 @@ def count_images_across_splits(output_directory: Path) -> int:
 
     return total_images
 
+def __make_yaml_file(output_directory: Path, class_idxs: dict):
+    """
+    Creates a YAML configuration file for YOLOv8.
 
+    Args:
+        output_directory (Path): The path to the output directory where the YAML file will be saved.
+        class_idxs (dict): A dictionary mapping class indices to class names.
+    """
+    # Extract class names from the class index dictionary
+    class_names = list(class_idxs.values())
 
+    # Define the structure of the YAML file
+    yaml_content = {
+        'train': str(output_directory / 'train' / 'images'),
+        'val': str(output_directory / 'valid' / 'images'),
+        'test': str(output_directory / 'test' / 'images'),
+        'nc': len(class_names),
+        'names': class_names
+    }
 
+    # Write the YAML content to a file
+    yaml_file_path = output_directory / 'dataset.yaml'
+    with open(yaml_file_path, 'w') as yaml_file:
+        yaml.dump(yaml_content, yaml_file, default_flow_style=False)
+
+    print(f"YOLOv8 YAML file created at {yaml_file_path}")

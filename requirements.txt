@@ -2,3 +2,4 @@ requests==2.25.1
 pandas==2.1.4
 ultralytics==8.0.195
 prettytable==3.7.0
+pyyaml==6.0.1
