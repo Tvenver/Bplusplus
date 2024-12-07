@@ -84,7 +84,7 @@ def prepare(input_directory: str, output_directory: str, with_background: bool =
         # __save_class_idx_to_file(class_idxs, output_directory)
         final_image_count = count_images_across_splits(output_directory)
         print(f"\nOut of {original_image_count} input images, {final_image_count} are eligible for detection. \nThese are saved across train, test and valid split in {output_directory}.")
-        __generate_sample_images_with_detections(output_directory)
+        __generate_sample_images_with_detections(output_directory, class_idxs)
 
         if with_background:
             print("\nCollecting and splitting background images.")
@@ -317,7 +317,7 @@ def __save_class_idx_to_file(class_idxs: dict, output_directory: Path):
             f.write(f"{class_name}: {idx}\n")
     print(f"Class indices have been saved to {class_idx_file}")
 
-def __generate_sample_images_with_detections(main_dir):
+def __generate_sample_images_with_detections(main_dir: Path, class_idxs: dict):
 
     """
     Generates one sample image with multiple detections for each of train, test, valid, combining up to 6 images in one output.
@@ -373,17 +373,8 @@ def __generate_sample_images_with_detections(main_dir):
         color_map = {idx: random.choice(colors) for idx in class_mapping.keys()}
         return color_map
 
-    def read_class_ids(class_ids_file):
-        class_mapping = {}
-        with open(class_ids_file, 'r') as f:
-            for line in f:
-                class_idx, class_name = line.strip().split(': ')
-                class_mapping[int(class_idx)] = class_name
-        return class_mapping
-
     splits = ['train', 'test', 'valid']
-    class_idx_file = os.path.join(main_dir, 'class_idx.txt')
-    class_mapping = read_class_ids(class_idx_file)
+    class_mapping = class_idxs
     color_map = generate_color_map(class_mapping)
 
     for split in splits:
