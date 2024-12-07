@@ -15,7 +15,7 @@ import requests
 from tqdm import tqdm
 import yaml
 
-def prepare(input_directory: str, output_directory: str):
+def prepare(input_directory: str, output_directory: str, with_background: bool = False):
 
     """
     Prepares the dataset for training by performing the following steps:
@@ -86,24 +86,25 @@ def prepare(input_directory: str, output_directory: str):
         print(f"\nOut of {original_image_count} input images, {final_image_count} are eligible for detection. \nThese are saved across train, test and valid split in {output_directory}.")
         __generate_sample_images_with_detections(output_directory)
 
-        print("\nCollecting and splitting background images.")
+        if with_background:
+            print("\nCollecting and splitting background images.")
 
-        bg_images=int(final_image_count*0.06)
+            bg_images=int(final_image_count*0.06)
 
-        search: dict[str, Any] = {
-            "scientificName": ["Plantae"]
-        }
+            search: dict[str, Any] = {
+                "scientificName": ["Plantae"]
+            }
 
-        collect(
-            group_by_key=Group.scientificName,
-            search_parameters=search, 
-            images_per_group=bg_images,
-            output_directory=temp_dir_path
-        )
+            collect(
+                group_by_key=Group.scientificName,
+                search_parameters=search, 
+                images_per_group=bg_images,
+                output_directory=temp_dir_path
+            )
 
-        __delete_corrupted_images(temp_dir_path / "Plantae")
+            __delete_corrupted_images(temp_dir_path / "Plantae")
 
-        __split_background_images(temp_dir_path / "Plantae", output_directory)
+            __split_background_images(temp_dir_path / "Plantae", output_directory)
 
         __count_classes_and_output_table(output_directory, class_idxs)
 
@@ -563,21 +564,19 @@ def __make_yaml_file(output_directory: Path, class_idxs: dict):
         output_directory (Path): The path to the output directory where the YAML file will be saved.
         class_idxs (dict): A dictionary mapping class indices to class names.
     """
-    # Extract class names from the class index dictionary
-    class_names = list(class_idxs.values())
 
     # Define the structure of the YAML file
     yaml_content = {
-        'train': str(output_directory / 'train' / 'images'),
-        'val': str(output_directory / 'valid' / 'images'),
-        'test': str(output_directory / 'test' / 'images'),
-        'nc': len(class_names),
-        'names': class_names
+        'path': str(output_directory),
+        'train': 'train/images',
+        'val': 'valid/images',
+        'test': 'test/images',
+        'names': {idx: name for idx, name in class_idxs.items()}
     }
 
     # Write the YAML content to a file
     yaml_file_path = output_directory / 'dataset.yaml'
     with open(yaml_file_path, 'w') as yaml_file:
-        yaml.dump(yaml_content, yaml_file, default_flow_style=False)
+        yaml.dump(yaml_content, yaml_file, default_flow_style=False, sort_keys=False)
 
     print(f"YOLOv8 YAML file created at {yaml_file_path}")
