@@ -558,7 +558,7 @@ def __make_yaml_file(output_directory: Path, class_idxs: dict):
 
     # Define the structure of the YAML file
     yaml_content = {
-        'path': str(output_directory),
+        'path': str(output_directory.resolve()),
         'train': 'train/images',
         'val': 'valid/images',
         'test': 'test/images',
