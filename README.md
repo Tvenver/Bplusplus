@@ -21,6 +21,12 @@ To use the bplusplus package to train your own insect detection model, we provid
 
 ![Bplusplus overview](./bplusplus2-overview.png)
 
+### Install package
+
+```python
+pip install bplusplus
+```
+
 ### bplusplus.collect()
 
 This function takes three arguments: 
