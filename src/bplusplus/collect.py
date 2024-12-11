@@ -13,7 +13,7 @@ class Group(str, Enum):
     scientificName="scientificName"
 
 #TODO add back support for fetching from dataset (or csvs)
-def collect_images(group_by_key: Group, search_parameters: dict[str, Any], images_per_group: int, output_directory: str):
+def collect(group_by_key: Group, search_parameters: dict[str, Any], images_per_group: int, output_directory: str):
 
     groups: list[str] = search_parameters[group_by_key.value]
 
@@ -26,12 +26,12 @@ def collect_images(group_by_key: Group, search_parameters: dict[str, Any], image
 
     print("Beginning to collect images from GBIF...")
     for group in groups:
-        print(f"Collecting images for {group}...")
+        # print(f"Collecting images for {group}...")
         occurrences_json = _fetch_occurrences(group_key=group_by_key, group_value=group, parameters=search_parameters, totalLimit=10000)
         optional_occurrences = map(lambda x: __parse_occurrence(x), occurrences_json)
         occurrences = list(filter(None, optional_occurrences))
 
-        print(f"{group} : {len(occurrences)} parseable occurrences fetched, will sample for {images_per_group}")
+        # print(f"{group} : {len(occurrences)} parseable occurrences fetched, will sample for {images_per_group}")
 
         random.seed(42) # for reproducibility
         sampled_occurrences = random.sample(occurrences, min(images_per_group, len(occurrences)))

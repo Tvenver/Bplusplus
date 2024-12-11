@@ -1,8 +1,8 @@
 [tool.poetry]
 name = "bplusplus"
-version = "0.1.1"
-description = "A simple method to create AI models for biodiversity"
-authors = ["Titus Venverloo <tvenver@mit.edu>", "Deniz Aydemir <deniz@aydemir.us>"]
+version = "1.0"
+description = "A simple method to create AI models for biodiversity, with collect and prepare pipeline"
+authors = ["Titus Venverloo <tvenver@mit.edu>", "Deniz Aydemir <deniz@aydemir.us>", "Orlando Closs <orlando.closs@wur.nl>", "Ase Hatveit <aase@mit.edu>"]
 license = "MIT"
 readme = "README.md"
 
@@ -12,6 +12,7 @@ requests = "2.25.1"
 ultralytics = "8.0.195"
 pygbif = "^0.6.4"
 validators = "^0.33.0"
+prettytable = "3.7.0"
 
 [tool.poetry.group.dev.dependencies]
 jupyter = "^1.0.0"
