@@ -12,66 +12,142 @@ This repo can be used to quickly generate YOLOv8 models for biodiversity monitor
 
 All code is tested on macOS and Python 3.12, without GPU. GPU would obviously accelerate the below steps, Ultralytics should automatically select the available GPU if there is any.
 
-## GitHub
-https://github.com/Tvenver/Bplusplus
-
-
 # How does it work?
 
-![Figure 9](https://github.com/user-attachments/assets/a01f513b-0609-412d-a633-3aee1e5dded6)
+To use the bplusplus package to train your own insect detection model, we provide four functions: `collect()`, `prepare()`, `train()`, `validate()`. When training an object detection model, you need a dataset with labeled data of insect species. For this package in the `collect()` function, we use images from the GBIF database (https://doi.org/10.15468/dl.dk9czq) and run them through a pretrained *insect detection model*, defining the bounding boxes for the insects, and add the scientific name from the file path. In that way, we are able to prepare a full dataset of labeled and classified insect data for training. 
 
-1. Select scientific names you want to train your model on. For now, only scientific names are supported as training categories.
-2. Select the parameters you want to use to filter your dataset (using the [parameters available in the GBIF Occurrence Search API](https://techdocs.gbif.org/en/openapi/v1/occurrence)).
-3. Decide how many images you want to use for training and validation per category.
-4. Select a directory to output the model information.
-5. Pass the above information to the `build_model` function.
+![Bplusplus overview](./bplusplus2-overview.png)
 
-You have created a YOLOv8 model for bug classification.
+### Install package
 
-The training and validation is done using Ultralytics. Please visit the Ultralytics YOLOv8 documentation for more information.
-
-# Pretrained Model
-
-There is also a pretrained YOLOv8 classification model, containing 2584 species, included in this repo under B++ CV Model. The included species are listed in a separate file.
-1. Download the pretrained model from the Google Drive link listed in the folder B++ CV Model
-2. Take the notebooks/run_model.py script, specify the path to the downloaded .pt file, and run the model.
-
-# Example Usage
-## Using search options
 ```python
-import os
-import bplusplus
-from typing import Any
+pip install bplusplus
+```
 
-names = [
-    "Nabis rugosus", 
-    "Forficula auricularia",
-    "Calosoma inquisitor",
-    "Bombus veteranus",
-    "Glyphotaelius pellucidus",
-    "Notoxus monoceros",
-    "Cacoxenus indagator",
-    "Chorthippus mollis",
-    "Trioza remota"
-]
+### bplusplus.collect()
 
-search: dict[str, Any] = {
-    "scientificName": names,
-    "country": ["US", "NL"]
-}
+This function takes three arguments: 
+- **search_parameters: dict[str, Any]** - List of scientific names of the species you want to collect from the GBIF database 
+- **images_per_group: int** - Number of images per species collected for training
+- **output_directory: str** - Directory to store collected images
 
-bplusplus.build_model(
-    group_by_key=bplusplus.Group.scientificName,
-    search_parameters=search, 
-    images_per_group=150,
-    model_output_folder=os.path.join('model')
+Example run: 
+```python
+species_list=[ "Vanessa atalanta", "Gonepteryx rhamni", "Bombus hortorum"] 
+images_per_group=20 
+output_directory="/dataset/selected-species"
+
+# Collect data from GBIF
+bplusplus.collect(
+  search_parameters=species_list,
+  images_per_group=images_per_group,
+  output_directory=output_directory
 )
 ```
 
-# Pending Improvements
+### bplusplus.prepare()
 
-* The Ultralytics parameters should be surfaced to the user of the package so they have more control over the training process.
-* The GBIF API documentation claims that you can filter on a dataset in your search, however it does not work in my current testing. This would be nice to allow users to create datasets on the GBIF website then pass that DOI directly here, so may warrant a closer look.
+Prepares the dataset for training by performing the following steps:
+  1. Copies images from the input directory to a temporary directory.
+  2. Deletes corrupted images.
+  3. Downloads YOLOv5 weights for *insect detection* if not already present.
+  4. Runs YOLOv5 inference to generate labels for the images.
+  5. Deletes orphaned images and inferences.
+  6. Updates labels based on class mapping.
+  7. Splits the data into train, test, and validation sets.
+  8. Counts the total number of images across all splits.
+  9. Makes a YAML configuration file for YOLOv8.
+
+This function takes three arguments: 
+- **input_directory: str** - The path to the input directory containing the images.
+- **output_directory: str** - The path to the output directory where the prepared dataset will be saved.
+- **with_background: bool = False** - Set to False if you don't want to include/download background images
+
+```python
+# Prepare data 
+bplusplus.prepare(
+    input_directory='/dataset/selected-species',
+    output_directory='/dataset/prepared-data',
+    with_background=False 
+)
+```
+
+### bplusplus.train()
+
+This function takes five arguments: 
+- **input_yaml: str** - yaml file created to train the model
+- **output_directory: str**
+- **epochs: int = 30** - Number of epochs to train the model
+- **imgsz: int = 640** - Image size 
+- **batch: int = 16** - Batch size for training
+
+```python
+# Train model
+model = bplusplus.train(
+  input_yaml="/dataset/prepared-data/dataset.yaml", # Make sure to add the correct path
+  output_directory="trained-model",
+  epochs=30, 
+  batch=16 
+)
+```
+
+### bplusplus.validate()
+
+This function takes two arguments: 
+- **model** - The trained YOLO model
+- **Path to yaml file** 
+
+```python
+metrics = bplusplus.validate(model, '/dataset/prepared-data/dataset.yaml')
+print(metrics)
+```
+
+
+
+## Full example
+```python
+import bplusplus
+
+species_list=[ "Vanessa atalanta", "Gonepteryx rhamni", "Bombus hortorum"] 
+images_per_group=20 
+output_directory="/dataset/selected-species"
+
+# Collect data from GBIF
+bplusplus.collect(
+  search_parameters=species_list,
+  images_per_group=images_per_group,
+  output_directory=output_directory
+)
+
+# Prepare data 
+bplusplus.prepare(
+    input_directory='/dataset/selected-species',
+    output_directory='/dataset/prepared-data',
+    with_background=False 
+)
+
+# Train model
+model = bplusplus.train(
+  input_yaml="/dataset/prepared-data/dataset.yaml", # Make sure to add the correct path
+  output_directory="trained-model",
+  epochs=30, 
+  batch=16 
+)
+
+# Validate model
+metrics = bplusplus.validate(model, '/dataset/prepared-data/dataset.yaml')
+print(metrics)
+
+```
+
+You have created a YOLOv8 model for insect detection. 
+
+# Earlier releases
+
+There is also a pretrained YOLOv8 classification model, containing 2584 species, from an earlier release and paper. 
+The CV model as presented in the paper can be downloaded from: https://drive.google.com/file/d/1wxAIdSzx5nhTOk4izc0RIycoecSdug_Q/view?usp=sharing
+
+To run/use the model, please consult the Ultralytics documentation. 
 
 
 # Citation
