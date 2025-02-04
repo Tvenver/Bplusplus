@@ -33,15 +33,21 @@ This function takes three arguments:
 
 Example run: 
 ```python
+import bplusplus
+from bplusplus.collect import Group
+
 species_list=[ "Vanessa atalanta", "Gonepteryx rhamni", "Bombus hortorum"] 
+# convert to dict
+search_parameters = {"scientificName": species_list}
 images_per_group=20 
 output_directory="/dataset/selected-species"
 
 # Collect data from GBIF
 bplusplus.collect(
-  search_parameters=species_list,
+  search_parameters=search_parameters,
   images_per_group=images_per_group,
-  output_directory=output_directory
+  output_directory=output_directory,
+  group_by_key=Group.scientificName,
 )
 ```
 
@@ -107,8 +113,12 @@ print(metrics)
 ## Full example
 ```python
 import bplusplus
+from bplusplus.collect import Group
 
 species_list=[ "Vanessa atalanta", "Gonepteryx rhamni", "Bombus hortorum"] 
+# convert to dict
+search_parameters = {"scientificName": species_list}
+
 images_per_group=20 
 output_directory="/dataset/selected-species"
 
@@ -116,7 +126,8 @@ output_directory="/dataset/selected-species"
 bplusplus.collect(
   search_parameters=species_list,
   images_per_group=images_per_group,
-  output_directory=output_directory
+  output_directory=output_directory,
+  group_by_key=Group.scientificName,
 )
 
 # Prepare data 
