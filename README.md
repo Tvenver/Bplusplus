@@ -28,8 +28,9 @@ pip install bplusplus
 
 This function takes three arguments: 
 - **search_parameters: dict[str, Any]** - List of scientific names of the species you want to collect from the GBIF database 
-- **images_per_group: int** - Number of images per species collected for training
+- **images_per_group: int** - Number of images per species collected for training. Max 9000. 
 - **output_directory: str** - Directory to store collected images
+- **num_threads: int** - Number of threads you want to run for collecting images. We recommend using a moderate number (3-5) to avoid overwhelming tha API server.  
 
 Example run: 
 ```python
@@ -37,12 +38,14 @@ import bplusplus
 
 species_list=[ "Vanessa atalanta", "Gonepteryx rhamni", "Bombus hortorum"] 
 # convert to dict
-search: dict[str, Any] = {
-    "scientificName": names
+search: dict[str, any] = {
+    "scientificName": species_list
 }
 
 images_per_group=20 
 output_directory="/dataset/selected-species"
+num_threads=2
+
 
 # Collect data from GBIF
 bplusplus.collect(
@@ -50,6 +53,7 @@ bplusplus.collect(
   images_per_group=images_per_group,
   output_directory=output_directory,
   group_by_key=bplusplus.Group.scientificName,
+  num_threads=num_threads
 )
 ```
 
