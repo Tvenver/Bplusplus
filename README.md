@@ -128,6 +128,7 @@ search: dict[str, Any] = {
 
 images_per_group=20 
 output_directory="/dataset/selected-species"
+num_threads=2
 
 # Collect data from GBIF
 bplusplus.collect(
@@ -135,6 +136,7 @@ bplusplus.collect(
   images_per_group=images_per_group,
   output_directory=output_directory,
   group_by_key=bplusplus.Group.scientificName,
+  num_threads=num_threads
 )
 
 # Prepare data 
