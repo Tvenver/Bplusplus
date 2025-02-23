@@ -33,7 +33,8 @@ def collect(group_by_key: Group, search_parameters: dict[str, Any], images_per_g
             search_parameters=search_parameters, 
             images_per_group=images_per_group, 
             output_directory=output_directory, 
-            group_by_key=group_by_key,
+            group_by_key=group_by_key
+            groups=groups,
         )
 
 def __single_collect(group_by_key: Group, search_parameters: dict[str, Any], images_per_group: int, output_directory: str, groups: list[str]):
