@@ -24,6 +24,8 @@ For the two stage pipeline, we first collect `collect()` the data from GBIF, the
 
 For the two stage pipeline, we first collect `collect()` the data from GBIF, then prepare `prepare()` this (classification) data for training by either size filtering (recommended "large") which also splits the data into train and valid. We then train the model with resnet using the `train_multitask()` function. The difference here is that it is training for species, order and family simultaneously. The trained model is a resnet classification model which will then be paired with a pretrained YOLOv8 insect detection model (hence two stage). 
 
+# Setup
+
 ### Install package
 
 ```python
