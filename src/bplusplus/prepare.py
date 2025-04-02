@@ -32,8 +32,7 @@ from ultralytics.nn.modules import (
     Bottleneck, C2f, SPPF, Detect, Concat
 )
 from ultralytics.nn.modules.block import DFL
-
-
+import numpy as np
 
 def prepare(input_directory: str, output_directory: str, one_stage: bool = False, with_background: bool = False, size_filter: bool = False, sizes: list = None):
 
@@ -138,11 +137,111 @@ def prepare(input_directory: str, output_directory: str, one_stage: bool = False
 
                 __split_background_images(temp_dir_path / "Plantae", output_directory)
 
-                __count_classes_and_output_table(output_directory, class_idxs)
+            __count_classes_and_output_table(output_directory, class_idxs)
 
-                __make_yaml_file(output_directory, class_idxs)
+            __make_yaml_file(output_directory, class_idxs)
         else:
-            __two_stage_update(class_mapping, filtered, output_directory, images_path)
+            try:
+                sized_dir = temp_dir_path / "sized"
+                sized_dir.mkdir(parents=True, exist_ok=True)
+                __two_stage_update(class_mapping, filtered, sized_dir, images_path)
+                __classification_split(sized_dir, output_directory)
+                __count_classification_split(output_directory, class_mapping)
+            except:
+                __classification_split(images_path, output_directory)
+                __count_classification_split(output_directory, class_mapping)
+            
+def __count_classification_split(output_directory: str, class_mapping: dict):
+    """
+    Counts the number of images in the train and valid splits for each class.
+
+    Args:
+        output_directory (str): Path to the output directory containing train and valid splits.
+        class_mapping (dict): Dictionary mapping class names to image file names.
+    """
+    class_counts = {}
+    train_counts = {}
+    valid_counts = {}
+    
+    for class_name in class_mapping.keys():
+        train_dir = output_directory / 'train' / class_name
+        valid_dir = output_directory / 'valid' / class_name
+        
+        train_count = len(list(train_dir.glob("*.jpg"))) if train_dir.exists() else 0
+        valid_count = len(list(valid_dir.glob("*.jpg"))) if valid_dir.exists() else 0
+        total_count = train_count + valid_count
+        
+        class_counts[class_name] = total_count
+        train_counts[class_name] = train_count
+        valid_counts[class_name] = valid_count
+    
+    table = PrettyTable()
+    table.field_names = ["Class", "Train", "Valid", "Total"]
+    for class_name in class_mapping.keys():
+        table.add_row([
+            class_name, 
+            train_counts[class_name], 
+            valid_counts[class_name], 
+            class_counts[class_name]
+        ])
+    print(table)
+    print(f"Saved in {output_directory}")
+
+def __classification_split(input_directory: str, output_directory: str):
+    """
+    Splits the data into train and validation sets for classification tasks.
+    
+    Args:
+        input_directory (str): Path to the input directory containing subdirectories of class names.
+        output_directory (str): Path to the output directory where train and valid splits will be created.
+    """
+    input_directory = Path(input_directory)
+    output_directory = Path(output_directory)
+    
+    # Create train and valid directories
+    train_dir = output_directory / 'train'
+    valid_dir = output_directory / 'valid'
+    
+    train_dir.mkdir(parents=True, exist_ok=True)
+    valid_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Process each class directory
+    for class_dir in input_directory.iterdir():
+        if not class_dir.is_dir():
+            continue
+            
+        class_name = class_dir.name
+        print(f"Processing class: {class_name}")
+        
+        # Create corresponding class directories in train and valid
+        (train_dir / class_name).mkdir(exist_ok=True)
+        (valid_dir / class_name).mkdir(exist_ok=True)
+        
+        # Get all image files
+        image_files = list(class_dir.glob('*.jpg')) + list(class_dir.glob('*.jpeg')) + list(class_dir.glob('*.png'))
+        
+        if not image_files:
+            print(f"Warning: No images found in {class_dir}")
+            continue
+            
+        # Shuffle the files to ensure random distribution
+        np.random.shuffle(image_files)
+        
+        # Split into train (90%) and valid (10%)
+        split_idx = int(len(image_files) * 0.9)
+        train_files = image_files[:split_idx]
+        valid_files = image_files[split_idx:]
+        
+        # Copy files to respective directories
+        for img_file in train_files:
+            shutil.copy(img_file, train_dir / class_name / img_file.name)
+            
+        for img_file in valid_files:
+            shutil.copy(img_file, valid_dir / class_name / img_file.name)
+        
+        print(f"  - {len(train_files)} images in train, {len(valid_files)} images in valid")
+    
+    print(f"\nData split complete. Train and validation sets created in {output_directory}")
 
 def filter_by_size(images_path: Path, labels_path: Path, sizes: list):
     """
@@ -195,25 +294,8 @@ def __two_stage_update(class_mapping: dict, filtered_images: Path, output_direct
     for class_name, images in class_mapping.items():
         for image_name in images:
             if image_name in filtered_images:
-                (output_directory / "classification" / class_name).mkdir(parents=True, exist_ok=True)
-                shutil.copy(images_path / image_name, output_directory / "classification" / class_name / image_name)
-
-   
-    class_counts = {}
-    for class_name in class_mapping.keys():
-        class_dir = output_directory / "classification" / class_name
-        if class_dir.exists():
-            file_count = len(list(class_dir.glob("*.jpg")))
-            class_counts[class_name] = file_count
-        else:
-            class_counts[class_name] = 0
-    
-    table = PrettyTable()
-    table.field_names = ["Class", "Total"]
-    for class_name, count in class_counts.items():
-        table.add_row([class_name, count])
-    print(table)
-    print(f"Saved in {output_directory / 'classification'}")
+                (output_directory / class_name).mkdir(parents=True, exist_ok=True)
+                shutil.copy(images_path / image_name, output_directory /  class_name / image_name)
 
 def __delete_corrupted_images(images_path: Path):
      

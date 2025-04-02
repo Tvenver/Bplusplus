@@ -8,15 +8,21 @@
 [![Downloads](https://static.pepy.tech/badge/bplusplus/month)](https://pepy.tech/project/bplusplus)
 [![Downloads](https://static.pepy.tech/badge/bplusplus/week)](https://pepy.tech/project/bplusplus)
 
-This repo can be used to quickly generate YOLOv8 models for biodiversity monitoring, relying on Ultralytics and a GBIF dataset.
+This repo can be used to quickly generate models for biodiversity monitoring, relying on the GBIF dataset.
 
-All code is tested on macOS and Python 3.12, without GPU. GPU would obviously accelerate the below steps, Ultralytics should automatically select the available GPU if there is any.
+# Three pipeline options
 
-# How does it work?
+## One stage YOLO
 
-To use the bplusplus package to train your own insect detection model, we provide four functions: `collect()`, `prepare()`, `train()`, `validate()`. When training an object detection model, you need a dataset with labeled data of insect species. For this package in the `collect()` function, we use images from the GBIF database (https://doi.org/10.15468/dl.dk9czq) and run them through a pretrained *insect detection model*, defining the bounding boxes for the insects, and add the scientific name from the file path. In that way, we are able to prepare a full dataset of labeled and classified insect data for training. 
+For the one stage pipeline, we first collect `collect()` the data from GBIF, then prepare the data for training by running the `prepare()` function, which adds bounding boxes to the images using a pretrained YOLO model.  We then train the model with YOLOv8 using the `train()` function. 
 
-![Bplusplus overview](./bplusplus2-overview.png)
+## Two stage YOLO/Resnet
+
+For the two stage pipeline, we first collect `collect()` the data from GBIF, then prepare `prepare()` this (classification) data for training by either size filtering (recommended "large") which also splits the data into train and valid. We then train the model with resnet using the `train_resnet()` function. The trained model is a resnet classification model which will then be paired with a pretrained YOLOv8 insect detection model (hence two stage). 
+
+## Two stage YOLO/Multitask-Resnet
+
+For the two stage pipeline, we first collect `collect()` the data from GBIF, then prepare `prepare()` this (classification) data for training by either size filtering (recommended "large") which also splits the data into train and valid. We then train the model with resnet using the `train_multitask()` function. The difference here is that it is training for species, order and family simultaneously. The trained model is a resnet classification model which will then be paired with a pretrained YOLOv8 insect detection model (hence two stage). 
 
 ### Install package
 
@@ -24,7 +30,7 @@ To use the bplusplus package to train your own insect detection model, we provid
 pip install bplusplus
 ```
 
-### bplusplus.collect()
+### bplusplus.collect() (All pipelines)
 
 This function takes three arguments: 
 - **search_parameters: dict[str, Any]** - List of scientific names of the species you want to collect from the GBIF database 
@@ -57,7 +63,7 @@ bplusplus.collect(
 )
 ```
 
-### bplusplus.prepare()
+### bplusplus.prepare() (All pipelines)
 
 Prepares the dataset for training by performing the following steps:
   1. Copies images from the input directory to a temporary directory.
@@ -74,17 +80,23 @@ This function takes three arguments:
 - **input_directory: str** - The path to the input directory containing the images.
 - **output_directory: str** - The path to the output directory where the prepared dataset will be saved.
 - **with_background: bool = False** - Set to False if you don't want to include/download background images
+- **one_stage: bool = False** - Set to True if you want to train a one stage model
+- **size_filter: bool = False** - Set to True if you want to filter by size of insect 
+- **sizes: list = None** - List of sizes to filter by. If None, all sizes will be used, ["large", "medium", "small"].
 
 ```python
 # Prepare data 
 bplusplus.prepare(
     input_directory='/dataset/selected-species',
     output_directory='/dataset/prepared-data',
-    with_background=False 
+    with_background=False,
+    one_stage=False,
+    size_filter=True,
+    sizes=["large"]
 )
 ```
 
-### bplusplus.train()
+### bplusplus.train() (One stage pipeline)
 
 This function takes five arguments: 
 - **input_yaml: str** - yaml file created to train the model
@@ -103,7 +115,58 @@ model = bplusplus.train(
 )
 ```
 
-### bplusplus.validate()
+### bplusplus.train_resnet() (Two stage (standard resnet) pipeline)
+
+This function takes eight arguments: 
+- **species_list: list** - List of species to train the model on
+- **model_type: str** - The type of resnet model to train. Options are "resnet50", "resnet152"
+- **batch_size: int** - The batch size for training
+- **num_epochs: int** - The number of epochs to train the model
+- **patience: int** - The number of epochs to wait before early stopping
+- **output_dir: str** - The path to the output directory where the trained model will be saved
+- **data_dir: str** - The path to the directory containing the prepared data
+- **img_size: int** - The size of the images to train the model on
+
+```python
+# Train resnet model
+bplusplus.train_resnet(
+  species_list=["Vanessa atalanta", "Gonepteryx rhamni", "Bombus hortorum"],
+  model_type="resnet50",
+  batch_size=16,
+  num_epochs=30,
+  patience=5,
+  output_dir="trained-model",
+  data_dir="prepared-data",
+  img_size=256
+)
+```
+
+### bplusplus.train_multitask() (Two stage (multitask resnet) pipeline)
+
+This function takes seven arguments: 
+- **batch_size: int** - The batch size for training
+- **epochs: int** - The number of epochs to train the model
+- **patience: int** - The number of epochs to wait before early stopping
+- **img_size: int** - The size of the images to train the model on
+- **data_dir: str** - The path to the directory containing the prepared data
+- **output_dir: str** - The path to the output directory where the trained model will be saved
+- **species_list: list** - List of species to train the model on
+
+```python
+# Train multitask model
+bplusplus.train_multitask(
+  batch_size=16,
+  epochs=30,
+  patience=5,
+  img_size=256,
+  data_dir="prepared-data",
+  output_dir="trained-model",
+  species_list=["Vanessa atalanta", "Gonepteryx rhamni", "Bombus hortorum"]
+)
+```
+
+
+### bplusplus.validate() (One stage pipeline)
 
 This function takes two arguments: 
 - **model** - The trained YOLO model
@@ -114,62 +177,47 @@ metrics = bplusplus.validate(model, '/dataset/prepared-data/dataset.yaml')
 print(metrics)
 ```
 
+### bplusplus.test_resnet() (Two stage (standard resnet) pipeline)
 
+This function takes six arguments: 
+- **data_path: str** - The path to the directory containing the test data
+- **yolo_weights: str** - The path to the YOLO weights
+- **resnet_weights: str** - The path to the resnet weights
+- **model: str** - The type of resnet model to use
+- **species_names: list** - The list of species names
+- **output_dir: str** - The path to the output directory where the test results will be saved
 
-## Full example
 ```python
-import bplusplus
 
-species_list=[ "Vanessa atalanta", "Gonepteryx rhamni", "Bombus hortorum"] 
-# convert to dict
-search: dict[str, Any] = {
-    "scientificName": names
-}
-
-images_per_group=20 
-output_directory="/dataset/selected-species"
-num_threads=2
-
-# Collect data from GBIF
-bplusplus.collect(
-  search_parameters=search,
-  images_per_group=images_per_group,
-  output_directory=output_directory,
-  group_by_key=bplusplus.Group.scientificName,
-  num_threads=num_threads
+bplusplus.test_resnet(
+    data_path=TEST_DATA_DIR,
+    yolo_weights=YOLO_WEIGHTS,
+    resnet_weights=RESNET_WEIGHTS,
+    model="resnet50",
+    species_names=species_list,
+    output_dir=TRAINED_MODEL_DIR
 )
-
-# Prepare data 
-bplusplus.prepare(
-    input_directory='/dataset/selected-species',
-    output_directory='/dataset/prepared-data',
-    with_background=False 
-)
-
-# Train model
-model = bplusplus.train(
-  input_yaml="/dataset/prepared-data/dataset.yaml", # Make sure to add the correct path
-  output_directory="trained-model",
-  epochs=30, 
-  batch=16 
-)
-
-# Validate model
-metrics = bplusplus.validate(model, '/dataset/prepared-data/dataset.yaml')
-print(metrics)
-
 ```
 
-You have created a YOLOv8 model for insect detection. 
+### bplusplus.test_multitask() (Two stage (multitask resnet) pipeline)
 
-# Earlier releases
+This function takes five arguments: 
+- **species_list: list** - List of species to test the model on
+- **test_set: str** - The path to the directory containing the test data
+- **yolo_weights: str** - The path to the YOLO weights
+- **hierarchical_weights: str** - The path to the hierarchical weights
+- **output_dir: str** - The path to the output directory where the test results will be saved
 
-There is also a pretrained YOLOv8 classification model, containing 2584 species, from an earlier release and paper. 
-The CV model as presented in the paper can be downloaded from: https://drive.google.com/file/d/1wxAIdSzx5nhTOk4izc0RIycoecSdug_Q/view?usp=sharing
 
-To run/use the model, please consult the Ultralytics documentation. 
-
-
+```python
+bplusplus.test_multitask(
+    species_list,
+    test_set=TEST_DATA_DIR,
+    yolo_weights=YOLO_WEIGHTS,
+    hierarchical_weights=RESNET_MULTITASK_WEIGHTS,
+    output_dir=TRAINED_MODEL_DIR
+)
+```
 # Citation
 
 All information in this GitHub is available under MIT license, as long as credit is given to the authors.
