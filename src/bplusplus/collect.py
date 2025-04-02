@@ -5,12 +5,9 @@ from enum import Enum
 from typing import Any, Optional, List, Dict
 from tqdm import tqdm 
 import random
-
 import pygbif
 import requests
 import validators
-
-
 
 #this lists currently supported groupings, more can be added with proper testing
 class Group(str, Enum):
@@ -33,7 +30,7 @@ def collect(group_by_key: Group, search_parameters: dict[str, Any], images_per_g
             search_parameters=search_parameters, 
             images_per_group=images_per_group, 
             output_directory=output_directory, 
-            group_by_key=group_by_key
+            group_by_key=group_by_key,
             groups=groups,
         )
 
