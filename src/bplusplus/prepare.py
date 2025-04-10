@@ -1,38 +1,38 @@
 import os
 import random
-from typing import Any, Optional
-import requests
-import tempfile
-from .collect import Group, collect
-from pathlib import Path
-from ultralytics import YOLO
 import shutil
-from PIL import Image, ImageDraw, ImageFont
+import tempfile
 from collections import defaultdict
-from prettytable import PrettyTable
+from pathlib import Path
+from typing import Any, Optional
+
 import matplotlib.pyplot as plt
+import numpy as np
 import requests
-from tqdm import tqdm
-import yaml
 import torch
+import yaml
+from PIL import Image, ImageDraw, ImageFont
+from prettytable import PrettyTable
 from torch import serialization
-from ultralytics.nn.tasks import DetectionModel
-from torch.nn.modules.container import Sequential
-from ultralytics.nn.modules.conv import Conv
-from torch.nn.modules.conv import Conv2d
+from torch.nn import Module, ModuleDict, ModuleList
+from torch.nn.modules.activation import LeakyReLU, ReLU, SiLU
 # Add more modules to prevent further errors
 from torch.nn.modules.batchnorm import BatchNorm2d
-from torch.nn.modules.activation import SiLU, ReLU, LeakyReLU
-from torch.nn.modules.pooling import MaxPool2d
-from torch.nn.modules.linear import Linear
+from torch.nn.modules.container import Sequential
+from torch.nn.modules.conv import Conv2d
 from torch.nn.modules.dropout import Dropout
+from torch.nn.modules.linear import Linear
+from torch.nn.modules.pooling import MaxPool2d
 from torch.nn.modules.upsampling import Upsample
-from torch.nn import Module, ModuleList, ModuleDict
-from ultralytics.nn.modules import (
-    Bottleneck, C2f, SPPF, Detect, Concat
-)
+from tqdm import tqdm
+from ultralytics import YOLO
+from ultralytics.nn.modules import SPPF, Bottleneck, C2f, Concat, Detect
 from ultralytics.nn.modules.block import DFL
-import numpy as np
+from ultralytics.nn.modules.conv import Conv
+from ultralytics.nn.tasks import DetectionModel
+
+from .collect import Group, collect
+
 
 def prepare(input_directory: str, output_directory: str, one_stage: bool = False, with_background: bool = False, size_filter: bool = False, sizes: list = None):
 
@@ -130,7 +130,8 @@ def prepare(input_directory: str, output_directory: str, one_stage: bool = False
                     group_by_key=Group.scientificName,
                     search_parameters=search, 
                     images_per_group=bg_images,
-                    output_directory=temp_dir_path
+                    output_directory=temp_dir_path,
+                    num_threads=3
                 )
 
                 __delete_corrupted_images(temp_dir_path / "Plantae")

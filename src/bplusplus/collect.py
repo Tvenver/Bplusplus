@@ -2,12 +2,13 @@ import os
 import random
 import threading
 from enum import Enum
-from typing import Any, Optional, List, Dict
-from tqdm import tqdm 
-import random
+from typing import Any, Dict, List, Optional
+
 import pygbif
 import requests
 import validators
+from tqdm import tqdm
+
 
 #this lists currently supported groupings, more can be added with proper testing
 class Group(str, Enum):
@@ -70,6 +71,10 @@ def __single_collect(group_by_key: Group, search_parameters: dict[str, Any], ima
 
 # threaded_collect: paralellize the collection of images
 def __threaded_collect(images_per_group: int, output_directory: str, num_threads: int, groups: list[str]):
+    # Handle edge case where num_threads is greater than number of groups
+    if num_threads >= len(groups):
+        num_threads = len(groups)
+
     # Divide the species list into num_threads parts
     chunk_size = len(groups) // num_threads
     species_chunks = [
