@@ -87,14 +87,21 @@ This function takes three arguments:
 - **sizes: list = None** - List of sizes to filter by. If None, all sizes will be used, ["large", "medium", "small"].
 
 ```python
-# Prepare data 
+# Prepare data (one stage small insects)
 bplusplus.prepare(
     input_directory='/dataset/selected-species',
     output_directory='/dataset/prepared-data',
-    with_background=False,
-    one_stage=False,
+    with_background=True,
+    one_stage=True,
     size_filter=True,
-    sizes=["large"]
+    sizes=["small"]
+)
+
+# Prepare data (two stage)
+bplusplus.prepare(
+    input_directory='/dataset/selected-species',
+    output_directory='/dataset/prepared-data',
+    one_stage=False
 )
 ```
 

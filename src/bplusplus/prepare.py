@@ -94,18 +94,59 @@ def prepare(input_directory: str, output_directory: str, one_stage: bool = False
             DetectionModel, Sequential, Conv, Conv2d, BatchNorm2d, 
             SiLU, ReLU, LeakyReLU, MaxPool2d, Linear, Dropout, Upsample,
             Module, ModuleList, ModuleDict,
-            Bottleneck, C2f, SPPF, Detect, Concat, DFL
+            Bottleneck, C2f, SPPF, Detect, Concat, DFL,
+            # Add torch internal classes
+            torch.nn.parameter.Parameter,
+            torch.Tensor,
+            torch._utils._rebuild_tensor_v2,
+            torch._utils._rebuild_parameter
         ])
-        
-        model = YOLO(weights_path)
-        model.predict(images_path, conf=0.25, save=True, save_txt=True, project=temp_dir_path)
-        labels_path = temp_dir_path / "predict" / "labels"
 
-        if size_filter and len(sizes) <= 2:
-            filtered=filter_by_size(images_path, labels_path, sizes)
-            print(f"\nFiltered {len(list(images_path.glob('*.jpg')))} images by size out of {original_image_count} input images.\n NOTE: Some images may be filtered due to corruption or inaccurate labels.")
+        labels_path = temp_dir_path / "predict" / "labels"
+        
+        try:
+            print(f"Loading YOLO model from {weights_path}")
+            model = YOLO(weights_path)
+            print(f"Running prediction on {len(list(images_path.glob('*.jpg')))} images")
+            
+            # Run prediction and consume the generator
+            results = model.predict(
+                source=images_path, 
+                conf=0.1,  
+                save=True, 
+                save_txt=True, 
+                project=temp_dir_path, 
+                name="predict",
+                exist_ok=True,
+                verbose=True,
+                stream=True
+            )
+            
+            # Count results by consuming the generator
+            result_count = 0
+            for _ in results:
+                result_count += 1
+            
+            print(f"Model prediction completed with {result_count} results")
+            print(f"Checking for labels in {labels_path}")
+            
+            # Verify labels were created
+            label_files = list(labels_path.glob("*.txt"))
+            print(f"Found {len(label_files)} label files")
+            
+            if len(label_files) == 0:
+                print("WARNING: No label files were created by the model prediction!")
+                
+        except Exception as e:
+            print(f"Error during model prediction: {e}")
+            import traceback
+            traceback.print_exc()
 
         if one_stage:
+
+            if size_filter and len(sizes) <= 2:
+                __filter_by_size(images_path, labels_path, sizes)
+                print(f"\nFiltered {len(list(images_path.glob('*.jpg')))} images by size out of {original_image_count} input images.\n NOTE: Some images may be filtered due to corruption or inaccurate labels.")
 
             __delete_orphaned_images_and_inferences(images_path, labels_path)
             __delete_invalid_txt_files(images_path, labels_path)
@@ -142,15 +183,17 @@ def prepare(input_directory: str, output_directory: str, one_stage: bool = False
 
             __make_yaml_file(output_directory, class_idxs)
         else:
-            try:
-                sized_dir = temp_dir_path / "sized"
-                sized_dir.mkdir(parents=True, exist_ok=True)
-                __two_stage_update(class_mapping, filtered, sized_dir, images_path)
-                __classification_split(sized_dir, output_directory)
-                __count_classification_split(output_directory, class_mapping)
-            except:
-                __classification_split(images_path, output_directory)
-                __count_classification_split(output_directory, class_mapping)
+            # try:
+            #     sized_dir = temp_dir_path / "sized"
+            #     sized_dir.mkdir(parents=True, exist_ok=True)
+            #     __two_stage_update(class_mapping, filtered, sized_dir, images_path)
+            #     __classification_split(sized_dir, output_directory)
+            #     __count_classification_split(output_directory, class_mapping)
+            # except:
+            __delete_orphaned_images_and_inferences(images_path, labels_path)
+            __delete_invalid_txt_files(images_path, labels_path)
+            __classification_split(input_directory, labels_path, output_directory, class_mapping)
+            __count_classification_split(output_directory, class_mapping)
             
 def __count_classification_split(output_directory: str, class_mapping: dict):
     """
@@ -186,17 +229,21 @@ def __count_classification_split(output_directory: str, class_mapping: dict):
             class_counts[class_name]
         ])
     print(table)
-    print(f"Saved in {output_directory}")
+    # print(f"Saved in {output_directory}")
 
-def __classification_split(input_directory: str, output_directory: str):
+def __classification_split(input_directory: str, labels_directory: str, output_directory: str, class_mapping: dict):
     """
-    Splits the data into train and validation sets for classification tasks.
+    Splits the data into train and validation sets for classification tasks,
+    cropping images according to their YOLO labels but preserving original class structure.
     
     Args:
-        input_directory (str): Path to the input directory containing subdirectories of class names.
+        input_directory (str): Path to the input directory containing images.
+        labels_directory (str): Path to the directory containing YOLO label files.
         output_directory (str): Path to the output directory where train and valid splits will be created.
+        class_mapping (dict): Dictionary mapping class names to image file names.
     """
     input_directory = Path(input_directory)
+    labels_directory = Path(labels_directory)
     output_directory = Path(output_directory)
     
     # Create train and valid directories
@@ -206,45 +253,91 @@ def __classification_split(input_directory: str, output_directory: str):
     train_dir.mkdir(parents=True, exist_ok=True)
     valid_dir.mkdir(parents=True, exist_ok=True)
     
-    # Process each class directory
-    for class_dir in input_directory.iterdir():
-        if not class_dir.is_dir():
-            continue
-            
-        class_name = class_dir.name
-        print(f"Processing class: {class_name}")
-        
-        # Create corresponding class directories in train and valid
+    # Create class directories based on class_mapping
+    for class_name in class_mapping:
         (train_dir / class_name).mkdir(exist_ok=True)
         (valid_dir / class_name).mkdir(exist_ok=True)
-        
-        # Get all image files
-        image_files = list(class_dir.glob('*.jpg')) + list(class_dir.glob('*.jpeg')) + list(class_dir.glob('*.png'))
-        
-        if not image_files:
-            print(f"Warning: No images found in {class_dir}")
-            continue
-            
-        # Shuffle the files to ensure random distribution
-        np.random.shuffle(image_files)
-        
-        # Split into train (90%) and valid (10%)
-        split_idx = int(len(image_files) * 0.9)
-        train_files = image_files[:split_idx]
-        valid_files = image_files[split_idx:]
-        
-        # Copy files to respective directories
-        for img_file in train_files:
-            shutil.copy(img_file, train_dir / class_name / img_file.name)
-            
-        for img_file in valid_files:
-            shutil.copy(img_file, valid_dir / class_name / img_file.name)
-        
-        print(f"  - {len(train_files)} images in train, {len(valid_files)} images in valid")
+        print(f"Created directory for class: {class_name}")
     
-    print(f"\nData split complete. Train and validation sets created in {output_directory}")
+    # Process each class folder and its images
+    valid_images = []
+    
+    for class_name, image_names in class_mapping.items():
+        print(f"Processing class: {class_name} with {len(image_names)} images")
+        
+        for image_name in image_names:
+            # Check if the image exists in the class subdirectory
+            class_subdir = input_directory / class_name
+            image_path = class_subdir / image_name
+            
+            if not image_path.exists():
+                continue
+                
+            # Use detection if available, otherwise just use the whole image
+            label_file = labels_directory / (image_path.stem + '.txt')
+            try:
+                img = Image.open(image_path)
+                
+                if label_file.exists():
+                    # If label exists, crop the image
+                    with open(label_file, 'r') as f:
+                        lines = f.readlines()
+                        if lines:
+                            parts = lines[0].strip().split()
+                            if len(parts) >= 5:
+                                x_center, y_center, width, height = map(float, parts[1:5])
+                                
+                                img_width, img_height = img.size
+                                x_min = int((x_center - width/2) * img_width)
+                                y_min = int((y_center - height/2) * img_height)
+                                x_max = int((x_center + width/2) * img_width)
+                                y_max = int((y_center + height/2) * img_height)
+                                
+                                x_min = max(0, x_min)
+                                y_min = max(0, y_min)
+                                x_max = min(img_width, x_max)
+                                y_max = min(img_height, y_max)
+                                
+                                img = img.crop((x_min, y_min, x_max, y_max))
+                
+                # Resize the image to 40x40 pixels
+                img = img.resize((40, 40), Image.LANCZOS)
+                
+                valid_images.append((image_path, img, class_name))
+                # print(f"  Added {image_path.name} to valid images")
+            except Exception as e:
+                print(f"Error processing {image_path}: {e}")
+    
+    print(f"Successfully processed {len(valid_images)} valid images for classification")
+    
+    # Shuffle and split images
+    random.shuffle(valid_images)
+    split_idx = int(len(valid_images) * 0.9)
+    train_images = valid_images[:split_idx]
+    valid_images = valid_images[split_idx:]
+    
+    print(f"Split into {len(train_images)} training images and {len(valid_images)} validation images")
+    
+    # Save images to train/valid directories
+    for image_set, dest_dir in [(train_images, train_dir), (valid_images, valid_dir)]:
+        for orig_file, img, class_name in image_set:
+            output_path = dest_dir / class_name / (orig_file.stem + '.jpg')
+            
+            # Convert any non-RGB mode to RGB before saving
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+                
+            img.save(output_path, format='JPEG', quality=95)
+            # print(f"Saved {output_path}")
+    
+    # Print summary
+    print(f"\nData split complete. Images saved to train and validation sets in {output_directory}")
+    for class_name in class_mapping:
+        train_count = len(list((train_dir / class_name).glob('*.*')))
+        valid_count = len(list((valid_dir / class_name).glob('*.*')))
+        print(f"  - {class_name}: {train_count} images in train, {valid_count} images in valid")
 
-def filter_by_size(images_path: Path, labels_path: Path, sizes: list):
+def __filter_by_size(images_path: Path, labels_path: Path, sizes: list):
     """
     Filters images by size and updates labels accordingly.
 
@@ -285,7 +378,6 @@ def filter_by_size(images_path: Path, labels_path: Path, sizes: list):
                 label_file.unlink()
             except FileNotFoundError:
                 pass
-    return filtered_images
 
 def __two_stage_update(class_mapping: dict, filtered_images: Path, output_directory: Path, images_path: Path):
     """
@@ -367,7 +459,7 @@ def __delete_orphaned_images_and_inferences(images_path: Path, labels_path: Path
         image_file_jpeg = images_path / (txt_file.stem + ".jpeg")
 
         if not (image_file_jpg.exists() or image_file_jpeg.exists()):
-            print(f"Deleting {txt_file.name} - No corresponding image file")
+            # print(f"Deleting {txt_file.name} - No corresponding image file")
             txt_file.unlink()
             
     label_stems = {txt_file.stem for txt_file in labels_path.glob("*.txt")}
@@ -375,7 +467,7 @@ def __delete_orphaned_images_and_inferences(images_path: Path, labels_path: Path
 
     for image_file in image_files:
         if image_file.stem not in label_stems:
-            print(f"Deleting orphaned image: {image_file.name}")
+            # print(f"Deleting orphaned image: {image_file.name}")
             image_file.unlink()
 
     print("Orphaned images files without corresponding labels have been deleted.")
@@ -400,7 +492,7 @@ def __delete_invalid_txt_files(images_path: Path, labels_path: Path):
             lines = file.readlines()
 
         if len(lines) == 0 or len(lines) > 1:
-            print(f"Deleting {txt_file.name} - Invalid file")
+            # print(f"Deleting {txt_file.name} - Invalid file")
             txt_file.unlink()
 
             image_file_jpg = images_path / (txt_file.stem + ".jpg")
@@ -408,10 +500,10 @@ def __delete_invalid_txt_files(images_path: Path, labels_path: Path):
 
             if image_file_jpg.exists():
                 image_file_jpg.unlink()
-                print(f"Deleted corresponding image file: {image_file_jpg.name}")
+                # print(f"Deleted corresponding image file: {image_file_jpg.name}")
             elif image_file_jpeg.exists():
                 image_file_jpeg.unlink()
-                print(f"Deleted corresponding image file: {image_file_jpeg.name}")
+                # print(f"Deleted corresponding image file: {image_file_jpeg.name}")
 
     print("Invalid text files and their corresponding images files have been deleted.")
 
