@@ -115,17 +115,17 @@ class HierarchicalInsectClassifier(nn.Module):
 def get_taxonomy(species_list):
     """
     Retrieves taxonomic information for a list of species from GBIF API.
-    Creates a hierarchical taxonomy dictionary with order, family, and species relationships.
+    Creates a hierarchical taxonomy dictionary with family, genus, and species relationships.
     """
     taxonomy = {1: [], 2: {}, 3: {}}
-    species_to_family = {}
-    family_to_order = {}
+    species_to_genus = {}
+    genus_to_family = {}
     
     logger.info(f"Building taxonomy from GBIF for {len(species_list)} species")
     
     print("\nTaxonomy Results:")
     print("-" * 80)
-    print(f"{'Species':<30} {'Order':<20} {'Family':<20} {'Status'}")
+    print(f"{'Species':<30} {'Family':<20} {'Genus':<20} {'Status'}")
     print("-" * 80)
     
     for species_name in species_list:
@@ -136,23 +136,23 @@ def get_taxonomy(species_list):
             
             if data.get('status') == 'ACCEPTED' or data.get('status') == 'SYNONYM':
                 family = data.get('family')
-                order = data.get('order')
+                genus = data.get('genus')
                 
-                if family and order:
+                if family and genus:
                     status = "OK"
                     
-                    print(f"{species_name:<30} {order:<20} {family:<20} {status}")
+                    print(f"{species_name:<30} {family:<20} {genus:<20} {status}")
                     
-                    species_to_family[species_name] = family
-                    family_to_order[family] = order
+                    species_to_genus[species_name] = genus
+                    genus_to_family[genus] = family
                     
-                    if order not in taxonomy[1]:
-                        taxonomy[1].append(order)
+                    if family not in taxonomy[1]:
+                        taxonomy[1].append(family)
                     
-                    taxonomy[2][family] = order
-                    taxonomy[3][species_name] = family
+                    taxonomy[2][genus] = family
+                    taxonomy[3][species_name] = genus
                 else:
-                    error_msg = f"Species '{species_name}' found in GBIF but family and order not found, could be spelling error in species, check GBIF"
+                    error_msg = f"Species '{species_name}' found in GBIF but family and genus not found, could be spelling error in species, check GBIF"
                     logger.error(error_msg)
                     print(f"{species_name:<30} {'Not found':<20} {'Not found':<20} ERROR")
                     print(f"Error: {error_msg}")
@@ -174,24 +174,24 @@ def get_taxonomy(species_list):
     taxonomy[1] = sorted(list(set(taxonomy[1])))
     print("-" * 80)
     
-    num_orders = len(taxonomy[1])
-    num_families = len(taxonomy[2])
+    num_families = len(taxonomy[1])
+    num_genera = len(taxonomy[2])
     num_species = len(taxonomy[3])
     
-    print("\nOrder indices:")
-    for i, order in enumerate(taxonomy[1]):
-        print(f"  {i}: {order}")
-    
     print("\nFamily indices:")
-    for i, family in enumerate(taxonomy[2].keys()):
+    for i, family in enumerate(taxonomy[1]):
         print(f"  {i}: {family}")
+    
+    print("\nGenus indices:")
+    for i, genus in enumerate(taxonomy[2].keys()):
+        print(f"  {i}: {genus}")
     
     print("\nSpecies indices:")
     for i, species in enumerate(species_list):
         print(f"  {i}: {species}")
     
-    logger.info(f"Taxonomy built: {num_orders} orders, {num_families} families, {num_species} species")
-    return taxonomy, species_to_family, family_to_order
+    logger.info(f"Taxonomy built: {num_families} families, {num_genera} genera, {num_species} species")
+    return taxonomy, species_to_genus, genus_to_family
 
 def create_mappings(taxonomy):
     """Create index mappings from taxonomy"""
@@ -244,12 +244,12 @@ class TestTwoStage:
                     saved_species = checkpoint["species_list"]
                     print(f"Saved model was trained on: {', '.join(saved_species)}")
     
-                taxonomy, species_to_family, family_to_order = get_taxonomy(species_names)
+                taxonomy, species_to_genus, genus_to_family = get_taxonomy(species_names)
             else:
-                taxonomy, species_to_family, family_to_order = get_taxonomy(species_names)
+                taxonomy, species_to_genus, genus_to_family = get_taxonomy(species_names)
         else:
             state_dict = checkpoint
-            taxonomy, species_to_family, family_to_order = get_taxonomy(species_names)
+            taxonomy, species_to_genus, genus_to_family = get_taxonomy(species_names)
         
         level_to_idx, idx_to_level = create_mappings(taxonomy)
         
@@ -259,8 +259,6 @@ class TestTwoStage:
         if hasattr(taxonomy, "items"):
             num_classes_per_level = [len(classes) if isinstance(classes, list) else len(classes.keys()) 
                                     for level, classes in taxonomy.items()]
-        else:
-            num_classes_per_level = [4, 5, 9]  # Example values, adjust as needed
         
         print(f"Using model with class counts: {num_classes_per_level}")
         
@@ -296,8 +294,8 @@ class TestTwoStage:
         print("Model successfully loaded")
         print(f"Using species: {', '.join(species_names)}")
         
-        self.species_to_family = species_to_family
-        self.family_to_order = family_to_order
+        self.species_to_genus = species_to_genus
+        self.genus_to_family = genus_to_family
 
     def get_frames(self, test_dir):
         image_dir = os.path.join(test_dir, "images")
@@ -305,10 +303,10 @@ class TestTwoStage:
         
         predicted_frames = []
         predicted_family_frames = []
-        predicted_order_frames = []
+        predicted_genus_frames = []
         true_species_frames = []
         true_family_frames = []
-        true_order_frames = []
+        true_genus_frames = []
         image_names = []
 
         start_time = time.time()  # Start timing
@@ -326,7 +324,7 @@ class TestTwoStage:
             detections = results[0].boxes
             predicted_frame = []
             predicted_family_frame = []
-            predicted_order_frame = []
+            predicted_genus_frame = []
 
             if detections:
                 for box in detections:
@@ -346,13 +344,13 @@ class TestTwoStage:
                         outputs = self.classification_model(input_tensor)
                     
                     # Get all taxonomic level predictions
-                    order_output = outputs[0]    # First output is order (level 1)
-                    family_output = outputs[1]   # Second output is family (level 2)
+                    family_output = outputs[0]   # First output is family (level 1)
+                    genus_output = outputs[1]    # Second output is genus (level 2)
                     species_output = outputs[2]  # Third output is species (level 3)
                     
                     # Get prediction indices
-                    order_idx = order_output.argmax(dim=1).item()
                     family_idx = family_output.argmax(dim=1).item()
+                    genus_idx = genus_output.argmax(dim=1).item()
                     species_idx = species_output.argmax(dim=1).item()
                     
                     img_height, img_width, _ = frame.shape
@@ -367,15 +365,15 @@ class TestTwoStage:
                     # Add predictions for each taxonomic level
                     predicted_frame.append([species_idx] + box_coords)
                     predicted_family_frame.append([family_idx] + box_coords)
-                    predicted_order_frame.append([order_idx] + box_coords)
+                    predicted_genus_frame.append([genus_idx] + box_coords)
 
             predicted_frames.append(predicted_frame if predicted_frame else [])
             predicted_family_frames.append(predicted_family_frame if predicted_family_frame else [])
-            predicted_order_frames.append(predicted_order_frame if predicted_order_frame else [])
+            predicted_genus_frames.append(predicted_genus_frame if predicted_genus_frame else [])
 
             true_species_frame = []
             true_family_frame = []
-            true_order_frame = []
+            true_genus_frame = []
             
             if os.path.exists(label_path) and os.path.getsize(label_path) > 0:
                 with open(label_path, 'r') as f:
@@ -389,22 +387,22 @@ class TestTwoStage:
                         if species_idx < len(self.species_names):
                             species_name = self.species_names[species_idx]
                             
-                            if species_name in self.species_to_family:
-                                family_name = self.species_to_family[species_name]
-                                # Get the index of the family in the level_to_idx mapping
-                                if 2 in self.level_to_idx and family_name in self.level_to_idx[2]:
-                                    family_idx = self.level_to_idx[2][family_name]
-                                    true_family_frame.append([family_idx] + box_coords)
+                            if species_name in self.species_to_genus:
+                                genus_name = self.species_to_genus[species_name]
+                                # Get the index of the genus in the level_to_idx mapping
+                                if 2 in self.level_to_idx and genus_name in self.level_to_idx[2]:
+                                    genus_idx = self.level_to_idx[2][genus_name]
+                                    true_genus_frame.append([genus_idx] + box_coords)
                                 
-                                if family_name in self.family_to_order:
-                                    order_name = self.family_to_order[family_name]
-                                    if 1 in self.level_to_idx and order_name in self.level_to_idx[1]:
-                                        order_idx = self.level_to_idx[1][order_name]
-                                        true_order_frame.append([order_idx] + box_coords)
+                                if genus_name in self.genus_to_family:
+                                    family_name = self.genus_to_family[genus_name]
+                                    if 1 in self.level_to_idx and family_name in self.level_to_idx[1]:
+                                        family_idx = self.level_to_idx[1][family_name]
+                                        true_family_frame.append([family_idx] + box_coords)
 
             true_species_frames.append(true_species_frame if true_species_frame else [])
             true_family_frames.append(true_family_frame if true_family_frame else [])
-            true_order_frames.append(true_order_frame if true_order_frame else [])
+            true_genus_frames.append(true_genus_frame if true_genus_frame else [])
 
         end_time = time.time()  # End timing
         
@@ -416,42 +414,42 @@ class TestTwoStage:
             writer.writerow([
                 "Image Name", 
                 "True Species Detections", 
+                "True Genus Detections",
                 "True Family Detections",
-                "True Order Detections",
                 "Species Detections", 
-                "Family Detections", 
-                "Order Detections"
+                "Genus Detections", 
+                "Family Detections"
             ])
             
-            for image_name, true_species, true_family, true_order, species_pred, family_pred, order_pred in zip(
+            for image_name, true_species, true_genus, true_family, species_pred, genus_pred, family_pred in zip(
                 image_names, 
                 true_species_frames, 
+                true_genus_frames,
                 true_family_frames,
-                true_order_frames,
                 predicted_frames, 
-                predicted_family_frames, 
-                predicted_order_frames
+                predicted_genus_frames, 
+                predicted_family_frames
             ):
                 writer.writerow([
                     image_name, 
                     true_species, 
+                    true_genus,
                     true_family,
-                    true_order,
                     species_pred, 
-                    family_pred, 
-                    order_pred
+                    genus_pred, 
+                    family_pred
                 ])
         
         print(f"Results saved to {output_file}")
-        return predicted_frames, true_species_frames, end_time - start_time, predicted_family_frames, predicted_order_frames, true_family_frames, true_order_frames
+        return predicted_frames, true_species_frames, end_time - start_time, predicted_genus_frames, predicted_family_frames, true_genus_frames, true_family_frames
     
     def run(self, test_dir):
         results = self.get_frames(test_dir)
         predicted_frames, true_species_frames, total_time = results[0], results[1], results[2]
-        predicted_family_frames = results[3]
-        predicted_order_frames = results[4]
-        true_family_frames = results[5]
-        true_order_frames = results[6]
+        predicted_genus_frames = results[3]
+        predicted_family_frames = results[4]
+        true_genus_frames = results[5]
+        true_family_frames = results[6]
         
         num_frames = len(os.listdir(os.path.join(test_dir, 'images')))
         avg_time_per_frame = total_time / num_frames
@@ -461,28 +459,28 @@ class TestTwoStage:
         
         self.calculate_metrics(
             predicted_frames, true_species_frames, 
-            predicted_family_frames, true_family_frames,
-            predicted_order_frames, true_order_frames
+            predicted_genus_frames, true_genus_frames,
+            predicted_family_frames, true_family_frames
         )
 
     def calculate_metrics(self, predicted_species_frames, true_species_frames, 
-                         predicted_family_frames, true_family_frames, 
-                         predicted_order_frames, true_order_frames):
+                         predicted_genus_frames, true_genus_frames, 
+                         predicted_family_frames, true_family_frames):
         """Calculate metrics at all taxonomic levels"""
-        # Get list of species, families and orders
+        # Get list of species, families and genera
         species_list = self.species_names
-        family_list = sorted(list(set(self.species_to_family.values())))
-        order_list = sorted(list(set(self.family_to_order.values())))
+        genus_list = sorted(list(set(self.species_to_genus.values())))
+        family_list = sorted(list(set(self.genus_to_family.values())))
         
         # Print the index mappings we're using for evaluation
         print("\nUsing the following index mappings for evaluation:")
-        print("\nOrder indices:")
-        for i, order in enumerate(order_list):
-            print(f"  {i}: {order}")
-        
         print("\nFamily indices:")
         for i, family in enumerate(family_list):
             print(f"  {i}: {family}")
+        
+        print("\nGenus indices:")
+        for i, genus in enumerate(genus_list):
+            print(f"  {i}: {genus}")
         
         print("\nSpecies indices:")
         for i, species in enumerate(species_list):
@@ -491,11 +489,11 @@ class TestTwoStage:
         # Dictionary to track prediction category counts for debugging
         prediction_counts = {
             "true_species_boxes": sum(len(frame) for frame in true_species_frames),
+            "true_genus_boxes": sum(len(frame) for frame in true_genus_frames),
             "true_family_boxes": sum(len(frame) for frame in true_family_frames),
-            "true_order_boxes": sum(len(frame) for frame in true_order_frames),
             "predicted_species": sum(len(frame) for frame in predicted_species_frames),
-            "predicted_family": sum(len(frame) for frame in predicted_family_frames),
-            "predicted_order": sum(len(frame) for frame in predicted_order_frames)
+            "predicted_genus": sum(len(frame) for frame in predicted_genus_frames),
+            "predicted_family": sum(len(frame) for frame in predicted_family_frames)
         }
         
         print(f"Prediction counts: {prediction_counts}")
@@ -504,11 +502,11 @@ class TestTwoStage:
         print("\n=== Species-level Metrics ===")
         self.get_metrics(predicted_species_frames, true_species_frames, species_list)
         
+        print("\n=== Genus-level Metrics ===")
+        self.get_metrics(predicted_genus_frames, true_genus_frames, genus_list)
+        
         print("\n=== Family-level Metrics ===")
         self.get_metrics(predicted_family_frames, true_family_frames, family_list)
-        
-        print("\n=== Order-level Metrics ===")
-        self.get_metrics(predicted_order_frames, true_order_frames, order_list)
 
     def get_metrics(self, predicted_frames, true_frames, labels):
         """Calculate metrics for object detection predictions"""

@@ -112,7 +112,7 @@ def prepare(input_directory: str, output_directory: str, one_stage: bool = False
             # Run prediction and consume the generator
             results = model.predict(
                 source=images_path, 
-                conf=0.1,  
+                conf=0.5,  
                 save=True, 
                 save_txt=True, 
                 project=temp_dir_path, 
@@ -192,7 +192,7 @@ def prepare(input_directory: str, output_directory: str, one_stage: bool = False
             # except:
             __delete_orphaned_images_and_inferences(images_path, labels_path)
             __delete_invalid_txt_files(images_path, labels_path)
-            __classification_split(input_directory, labels_path, output_directory, class_mapping)
+            __classification_split(images_path, labels_path, output_directory, class_mapping)
             __count_classification_split(output_directory, class_mapping)
             
 def __count_classification_split(output_directory: str, class_mapping: dict):
@@ -262,19 +262,28 @@ def __classification_split(input_directory: str, labels_directory: str, output_d
     # Process each class folder and its images
     valid_images = []
     
+    # First, collect all valid label files
+    valid_label_stems = {label_file.stem for label_file in labels_directory.glob("*.txt") 
+                        if label_file.exists() and os.path.getsize(label_file) > 0}
+    
+    print(f"Found {len(valid_label_stems)} valid label files")
+    
     for class_name, image_names in class_mapping.items():
         print(f"Processing class: {class_name} with {len(image_names)} images")
         
         for image_name in image_names:
-            # Check if the image exists in the class subdirectory
-            class_subdir = input_directory / class_name
-            image_path = class_subdir / image_name
+            # Check if the image exists directly in the input directory
+            image_path = input_directory / image_name
             
             if not image_path.exists():
                 continue
                 
-            # Use detection if available, otherwise just use the whole image
+            # Skip images that don't have a valid label
+            if image_path.stem not in valid_label_stems:
+                continue
+                
             label_file = labels_directory / (image_path.stem + '.txt')
+            
             try:
                 img = Image.open(image_path)
                 
@@ -300,11 +309,19 @@ def __classification_split(input_directory: str, labels_directory: str, output_d
                                 
                                 img = img.crop((x_min, y_min, x_max, y_max))
                 
-                # Resize the image to 40x40 pixels
-                img = img.resize((40, 40), Image.LANCZOS)
+                img_width, img_height = img.size
+                if img_width < img_height:
+                    # Width is smaller, make it 40
+                    new_width = 40
+                    new_height = int((img_height / img_width) * 40)
+                else:
+                    # Height is smaller, make it 40
+                    new_height = 40
+                    new_width = int((img_width / img_height) * 40)
+                
+                img = img.resize((new_width, new_height), Image.LANCZOS)
                 
                 valid_images.append((image_path, img, class_name))
-                # print(f"  Added {image_path.name} to valid images")
             except Exception as e:
                 print(f"Error processing {image_path}: {e}")
     
@@ -328,7 +345,6 @@ def __classification_split(input_directory: str, labels_directory: str, output_d
                 img = img.convert('RGB')
                 
             img.save(output_path, format='JPEG', quality=95)
-            # print(f"Saved {output_path}")
     
     # Print summary
     print(f"\nData split complete. Images saved to train and validation sets in {output_directory}")

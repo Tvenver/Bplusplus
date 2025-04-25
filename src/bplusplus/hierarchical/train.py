@@ -144,17 +144,17 @@ def train_multitask(batch_size=4, epochs=30, patience=3, img_size=640, data_dir=
 def get_taxonomy(species_list):
     """
     Retrieves taxonomic information for a list of species from GBIF API.
-    Creates a hierarchical taxonomy dictionary with order, family, and species relationships.
+    Creates a hierarchical taxonomy dictionary with family, genus, and species relationships.
     """
     taxonomy = {1: [], 2: {}, 3: {}}
-    species_to_family = {}
-    family_to_order = {}
+    species_to_genus = {}
+    genus_to_family = {}
     
     logger.info(f"Building taxonomy from GBIF for {len(species_list)} species")
     
     print("\nTaxonomy Results:")
     print("-" * 80)
-    print(f"{'Species':<30} {'Order':<20} {'Family':<20} {'Status'}")
+    print(f"{'Species':<30} {'Family':<20} {'Genus':<20} {'Status'}")
     print("-" * 80)
     
     for species_name in species_list:
@@ -165,23 +165,23 @@ def get_taxonomy(species_list):
             
             if data.get('status') == 'ACCEPTED' or data.get('status') == 'SYNONYM':
                 family = data.get('family')
-                order = data.get('order')
+                genus = data.get('genus')
                 
-                if family and order:
+                if family and genus:
                     status = "OK"
                     
-                    print(f"{species_name:<30} {order:<20} {family:<20} {status}")
+                    print(f"{species_name:<30} {family:<20} {genus:<20} {status}")
                     
-                    species_to_family[species_name] = family
-                    family_to_order[family] = order
+                    species_to_genus[species_name] = genus
+                    genus_to_family[genus] = family
                     
-                    if order not in taxonomy[1]:
-                        taxonomy[1].append(order)
+                    if family not in taxonomy[1]:
+                        taxonomy[1].append(family)
                     
-                    taxonomy[2][family] = order
-                    taxonomy[3][species_name] = family
+                    taxonomy[2][genus] = family
+                    taxonomy[3][species_name] = genus
                 else:
-                    error_msg = f"Species '{species_name}' found in GBIF but family and order not found, could be spelling error in species, check GBIF"
+                    error_msg = f"Species '{species_name}' found in GBIF but family and genus not found, could be spelling error in species, check GBIF"
                     logger.error(error_msg)
                     print(f"{species_name:<30} {'Not found':<20} {'Not found':<20} ERROR")
                     print(f"Error: {error_msg}")
@@ -203,23 +203,23 @@ def get_taxonomy(species_list):
     taxonomy[1] = sorted(list(set(taxonomy[1])))
     print("-" * 80)
     
-    num_orders = len(taxonomy[1])
-    num_families = len(taxonomy[2])
+    num_families = len(taxonomy[1])
+    num_genera = len(taxonomy[2])
     num_species = len(taxonomy[3])
     
-    print("\nOrder indices:")
-    for i, order in enumerate(taxonomy[1]):
-        print(f"  {i}: {order}")
-    
     print("\nFamily indices:")
-    for i, family in enumerate(taxonomy[2].keys()):
+    for i, family in enumerate(taxonomy[1]):
         print(f"  {i}: {family}")
+    
+    print("\nGenus indices:")
+    for i, genus in enumerate(taxonomy[2].keys()):
+        print(f"  {i}: {genus}")
     
     print("\nSpecies indices:")
     for i, species in enumerate(species_list):
         print(f"  {i}: {species}")
     
-    logger.info(f"Taxonomy built: {num_orders} orders, {num_families} families, {num_species} species")
+    logger.info(f"Taxonomy built: {num_families} families, {num_genera} genera, {num_species} species")
     return taxonomy
 
 def get_species_from_directory(train_dir):
@@ -276,15 +276,15 @@ class InsectDataset(Dataset):
         self.level_to_idx = level_to_idx
         self.samples = []
         
-        species_to_family = {species: family for species, family in taxonomy[3].items()}
-        family_to_order = {family: order for family, order in taxonomy[2].items()}
+        species_to_genus = {species: genus for species, genus in taxonomy[3].items()}
+        genus_to_family = {genus: family for genus, family in taxonomy[2].items()}
         
         for species_name in os.listdir(root_dir):
             species_path = os.path.join(root_dir, species_name)
             if os.path.isdir(species_path):
-                if species_name in species_to_family:
-                    family_name = species_to_family[species_name]
-                    order_name = family_to_order[family_name]
+                if species_name in species_to_genus:
+                    genus_name = species_to_genus[species_name]
+                    family_name = genus_to_family[genus_name]
                     
                     for img_file in os.listdir(species_path):
                         if img_file.endswith(('.jpg', '.png', '.jpeg')):
@@ -296,7 +296,7 @@ class InsectDataset(Dataset):
                                 # Only add valid images to samples
                                 self.samples.append({
                                     'image_path': img_path,
-                                    'labels': [order_name, family_name, species_name]
+                                    'labels': [family_name, genus_name, species_name]
                                 })
 
                             except Exception as e:
