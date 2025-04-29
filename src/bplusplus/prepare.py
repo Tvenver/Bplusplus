@@ -107,27 +107,40 @@ def prepare(input_directory: str, output_directory: str, one_stage: bool = False
         try:
             print(f"Loading YOLO model from {weights_path}")
             model = YOLO(weights_path)
-            print(f"Running prediction on {len(list(images_path.glob('*.jpg')))} images")
             
-            # Run prediction and consume the generator
-            results = model.predict(
-                source=images_path, 
-                conf=0.5,  
-                save=True, 
-                save_txt=True, 
-                project=temp_dir_path, 
-                name="predict",
-                exist_ok=True,
-                verbose=True,
-                stream=True
-            )
+            # Get list of all image files
+            image_files = list(images_path.glob('*.jpg'))
+            print(f"Found {len(image_files)} images to process")
             
-            # Count results by consuming the generator
+            # Ensure predict directory exists
+            predict_dir = temp_dir_path / "predict"
+            predict_dir.mkdir(exist_ok=True)
+            labels_path.mkdir(parents=True, exist_ok=True)
+            
             result_count = 0
-            for _ in results:
-                result_count += 1
+            error_count = 0
             
-            print(f"Model prediction completed with {result_count} results")
+            for img_path in image_files:
+                try:
+                    results = model.predict(
+                        source=str(img_path),
+                        conf=0.5,
+                        save=True,
+                        save_txt=True,
+                        project=temp_dir_path,
+                        name="predict",
+                        exist_ok=True,
+                        verbose=True
+                    )
+                    
+                    result_count += 1
+                    
+                except Exception as e:
+                    error_count += 1
+                    print(f"Error processing {img_path.name}: {e}")
+                    continue
+            
+            print(f"Model prediction completed: {result_count} successful, {error_count} failed")
             print(f"Checking for labels in {labels_path}")
             
             # Verify labels were created
@@ -138,7 +151,7 @@ def prepare(input_directory: str, output_directory: str, one_stage: bool = False
                 print("WARNING: No label files were created by the model prediction!")
                 
         except Exception as e:
-            print(f"Error during model prediction: {e}")
+            print(f"Error during model prediction setup: {e}")
             import traceback
             traceback.print_exc()
 
@@ -319,6 +332,7 @@ def __classification_split(input_directory: str, labels_directory: str, output_d
                     new_height = 40
                     new_width = int((img_width / img_height) * 40)
                 
+                #blur the image
                 img = img.resize((new_width, new_height), Image.LANCZOS)
                 
                 valid_images.append((image_path, img, class_name))
