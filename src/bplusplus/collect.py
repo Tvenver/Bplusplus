@@ -114,6 +114,8 @@ def __next_batch(parameters: dict[str, Any], total_limit: int, offset: int, curr
         parameters["limit"] = total_limit
         parameters["offset"] = offset
         parameters["mediaType"] = ["StillImage"]
+        parameters["basisOfRecord"] = ["HUMAN_OBSERVATION", "LIVING_SPECIMEN", "MACHINE_OBSERVATION", "OBSERVATION", "OCCURRENCE"]
+        parameters["lifeStage"] = ["Adult"]
         search = pygbif.occurrences.search(**parameters)
         occurrences = search["results"]
         if search["endOfRecords"] or len(current) >= total_limit:
