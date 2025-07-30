@@ -10,8 +10,6 @@ Using the `Bplusplus` library, this pipeline automates the entire machine learni
 - **Intelligent Data Preparation**: Uses a pre-trained model to automatically find, crop, and resize insects from raw images, ensuring high-quality training data.
 - **Hierarchical Classification**: Trains a model to identify insects at three taxonomic levels: **family, genus, and species**.
 - **Video Inference & Tracking**: Processes video files to detect, classify, and track individual insects over time, providing aggregated predictions.
-- **Adaptable**: Easily customize the target species without changing the core code.
-
 ## Pipeline Overview
 
 The process is broken down into six main steps, all detailed in the `full_pipeline.ipynb` notebook:
