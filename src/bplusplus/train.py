@@ -14,7 +14,7 @@ import logging
 from tqdm import tqdm  
 import sys
 
-def train_multitask(batch_size=4, epochs=30, patience=3, img_size=640, data_dir='/mnt/nvme0n1p1/datasets/insect/bjerge-train2', output_dir='./output', species_list=None):
+def train(batch_size=4, epochs=30, patience=3, img_size=640, data_dir='input', output_dir='./output', species_list=None):
     """
     Main function to run the entire training pipeline.
     Sets up datasets, model, training process and handles errors.

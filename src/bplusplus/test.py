@@ -23,7 +23,7 @@ import sys
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def test_multitask(species_list, test_set, yolo_weights, hierarchical_weights, output_dir="."):
+def test(species_list, test_set, yolo_weights, hierarchical_weights, output_dir="."):
     """
     Run the two-stage classifier on a test set.
     
@@ -243,8 +243,15 @@ class TestTwoStage:
                 if "species_list" in checkpoint:
                     saved_species = checkpoint["species_list"]
                     print(f"Saved model was trained on: {', '.join(saved_species)}")
-    
-                taxonomy, species_to_genus, genus_to_family = get_taxonomy(species_names)
+                
+                # Use saved taxonomy mappings if available
+                if "species_to_genus" in checkpoint and "genus_to_family" in checkpoint:
+                    species_to_genus = checkpoint["species_to_genus"]
+                    genus_to_family = checkpoint["genus_to_family"]
+                else:
+                    # Fallback: fetch from GBIF but this may cause index mismatches
+                    print("Warning: No taxonomy mappings in checkpoint, fetching from GBIF")
+                    _, species_to_genus, genus_to_family = get_taxonomy(species_names)
             else:
                 taxonomy, species_to_genus, genus_to_family = get_taxonomy(species_names)
         else:
@@ -285,8 +292,6 @@ class TestTwoStage:
         self.classification_model.eval()
 
         self.classification_transform = transforms.Compose([
-            transforms.Resize((768, 768)),  # Fixed size for all validation images
-            transforms.CenterCrop(640),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
@@ -467,10 +472,18 @@ class TestTwoStage:
                          predicted_genus_frames, true_genus_frames, 
                          predicted_family_frames, true_family_frames):
         """Calculate metrics at all taxonomic levels"""
-        # Get list of species, families and genera
+        # Get list of species, families and genera using the same order as model training
         species_list = self.species_names
-        genus_list = sorted(list(set(self.species_to_genus.values())))
-        family_list = sorted(list(set(self.genus_to_family.values())))
+        
+        # Use the index mappings from the model to ensure consistency
+        if 1 in self.idx_to_level and 2 in self.idx_to_level:
+            family_list = [self.idx_to_level[1][i] for i in sorted(self.idx_to_level[1].keys())]
+            genus_list = [self.idx_to_level[2][i] for i in sorted(self.idx_to_level[2].keys())]
+        else:
+            # Fallback to sorted lists (may cause issues)
+            print("Warning: Using fallback sorted lists for taxonomy - this may cause index mismatches")
+            genus_list = sorted(list(set(self.species_to_genus.values())))
+            family_list = sorted(list(set(self.genus_to_family.values())))
         
         # Print the index mappings we're using for evaluation
         print("\nUsing the following index mappings for evaluation:")
@@ -665,4 +678,4 @@ if __name__ == "__main__":
     hierarchical_model_path = "/mnt/nvme0n1p1/mit/two-stage-detection/hierarchical/hierarchical-weights.pth"
     output_directory = "./output"
     
-    test_multitask(species_names, test_directory, yolo_model_path, hierarchical_model_path, output_directory)
+    test(species_names, test_directory, yolo_model_path, hierarchical_model_path, output_directory)

@@ -1,21 +1,27 @@
 [tool.poetry]
 name = "bplusplus"
-version = "1.2.2"
+version = "1.2.3"
 description = "A simple method to create AI models for biodiversity, with collect and prepare pipeline"
-authors = ["Titus Venverloo <tvenver@mit.edu>", "Deniz Aydemir <deniz@aydemir.us>", "Orlando Closs <orlando.closs@wur.nl>", "Ase Hatveit <aase@mit.edu>"]
+authors = ["Titus Venverloo <tvenver@mit.edu>", "Deniz Aydemir <deniz@aydemir.us>", "Orlando Closs <orlandocloss@pm.me>", "Ase Hatveit <aase@mit.edu>"]
 license = "MIT"
 readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.9.0"
 requests = "2.25.1"
-ultralytics = "8.0.195"
+pandas = "2.1.4"
+ultralytics = ">=8.3.0"
+pyyaml = "6.0.1"
+tqdm = "4.66.4"
+prettytable = "3.7.0"
+torch = "^2.5.0"
+torchvision = "*"
+pillow = "*"
+numpy = "*"
+scikit-learn = "*"
 pygbif = "^0.6.4"
 validators = "^0.33.0"
-prettytable = "3.7.0"
-scikit-learn = "^1.6.1"
 tabulate = "^0.9.0"
-torch = "2.5.0"
 
 [tool.poetry.group.dev.dependencies]
 jupyter = "^1.0.0"
