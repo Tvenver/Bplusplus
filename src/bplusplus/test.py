@@ -74,6 +74,16 @@ def setup_gpu():
         logger.warning("Falling back to CPU")
         return torch.device("cpu")
 
+# Add this check for backwards compatibility
+if hasattr(torch.serialization, 'add_safe_globals'):
+    torch.serialization.add_safe_globals([
+        'torch.LongTensor',
+        'torch.cuda.LongTensor',
+        'torch.FloatStorage',
+        'torch.FloatStorage',
+        'torch.cuda.FloatStorage',
+    ])
+
 class HierarchicalInsectClassifier(nn.Module):
     def __init__(self, num_classes_per_level):
         """

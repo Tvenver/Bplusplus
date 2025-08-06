@@ -52,7 +52,7 @@ def train(batch_size=4, epochs=30, patience=3, img_size=640, data_dir='input', o
     
     taxonomy = get_taxonomy(species_list)
     
-    level_to_idx, parent_child_relationship = create_mappings(taxonomy)
+    level_to_idx, parent_child_relationship = create_mappings(taxonomy, species_list)
     
     num_classes_per_level = [len(taxonomy[level]) if isinstance(taxonomy[level], list) 
                             else len(taxonomy[level].keys()) for level in sorted(taxonomy.keys())]
@@ -150,14 +150,17 @@ def get_taxonomy(species_list):
     species_to_genus = {}
     genus_to_family = {}
     
-    logger.info(f"Building taxonomy from GBIF for {len(species_list)} species")
+    species_list_for_gbif = [s for s in species_list if s.lower() != 'unknown']
+    has_unknown = len(species_list_for_gbif) != len(species_list)
+    
+    logger.info(f"Building taxonomy from GBIF for {len(species_list_for_gbif)} species")
     
     print("\nTaxonomy Results:")
     print("-" * 80)
     print(f"{'Species':<30} {'Family':<20} {'Genus':<20} {'Status'}")
     print("-" * 80)
     
-    for species_name in species_list:
+    for species_name in species_list_for_gbif:
         url = f"https://api.gbif.org/v1/species/match?name={species_name}&verbose=true"
         try:
             response = requests.get(url)
@@ -199,6 +202,19 @@ def get_taxonomy(species_list):
             print(f"{species_name:<30} {'Error':<20} {'Error':<20} FAILED")
             print(f"Error: {error_msg}")
             sys.exit(1)  # Stop the script
+
+    if has_unknown:
+        unknown_family = "Unknown"
+        unknown_genus = "Unknown"
+        unknown_species = "unknown"
+        
+        if unknown_family not in taxonomy[1]:
+            taxonomy[1].append(unknown_family)
+        
+        taxonomy[2][unknown_genus] = unknown_family
+        taxonomy[3][unknown_species] = unknown_genus
+        
+        print(f"{unknown_species:<30} {unknown_family:<20} {unknown_genus:<20} {'OK'}")
     
     taxonomy[1] = sorted(list(set(taxonomy[1])))
     print("-" * 80)
@@ -212,7 +228,7 @@ def get_taxonomy(species_list):
         print(f"  {i}: {family}")
     
     print("\nGenus indices:")
-    for i, genus in enumerate(taxonomy[2].keys()):
+    for i, genus in enumerate(sorted(taxonomy[2].keys())):
         print(f"  {i}: {genus}")
     
     print("\nSpecies indices:")
@@ -244,7 +260,7 @@ def get_species_from_directory(train_dir):
     logger.info(f"Found {len(species_list)} species in {train_dir}")
     return species_list
 
-def create_mappings(taxonomy):
+def create_mappings(taxonomy, species_list=None):
     """
     Creates mapping dictionaries from taxonomy data.
     Returns level-to-index mapping and parent-child relationships between taxonomic levels.
@@ -254,9 +270,17 @@ def create_mappings(taxonomy):
 
     for level, labels in taxonomy.items():
         if isinstance(labels, list):
+            # Level 1: Family (already sorted)
             level_to_idx[level] = {label: idx for idx, label in enumerate(labels)}
-        else:
-            level_to_idx[level] = {label: idx for idx, label in enumerate(labels.keys())}
+        else:  # dict for levels 2 and 3
+            if level == 3 and species_list is not None:
+                # For species, the order is determined by species_list
+                level_to_idx[level] = {label: idx for idx, label in enumerate(species_list)}
+            else:
+                # For genus (and as a fallback for species), sort alphabetically
+                sorted_keys = sorted(labels.keys())
+                level_to_idx[level] = {label: idx for idx, label in enumerate(sorted_keys)}
+            
             for child, parent in labels.items():
                 if (level, parent) not in parent_child_relationship:
                     parent_child_relationship[(level, parent)] = []
@@ -670,7 +694,7 @@ if __name__ == '__main__':
     species_list = [
         "Coccinella septempunctata", "Apis mellifera", "Bombus lapidarius", "Bombus terrestris",
         "Eupeodes corollae", "Episyrphus balteatus", "Aglais urticae", "Vespula vulgaris",
-        "Eristalis tenax"
+        "Eristalis tenax", "unknown"
     ]
-    train_multitask(species_list=species_list, epochs=2)
+    train(species_list=species_list, epochs=2)
 

@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from .tracker import InsectTracker
 import torch
+import torchvision.transforms as T
+from torchvision.models.detection import fasterrcnn_resnet50_fpn
 from ultralytics import YOLO
 from torchvision import transforms
 from PIL import Image
@@ -18,6 +20,16 @@ import requests
 import logging
 from collections import defaultdict
 import uuid
+
+# Add this check for backwards compatibility
+if hasattr(torch.serialization, 'add_safe_globals'):
+    torch.serialization.add_safe_globals([
+        'torch.LongTensor',
+        'torch.cuda.LongTensor',
+        'torch.FloatStorage',
+        'torch.FloatStorage',
+        'torch.cuda.FloatStorage',
+    ])
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -36,12 +48,15 @@ def get_taxonomy(species_list):
     species_to_genus = {}
     genus_to_family = {}
     
-    logger.info(f"Building taxonomy from GBIF for {len(species_list)} species")
+    species_list_for_gbif = [s for s in species_list if s.lower() != 'unknown']
+    has_unknown = len(species_list_for_gbif) != len(species_list)
+    
+    logger.info(f"Building taxonomy from GBIF for {len(species_list_for_gbif)} species")
     
     print(f"\n{'Species':<30} {'Family':<20} {'Genus':<20} {'Status'}")
     print("-" * 80)
     
-    for species_name in species_list:
+    for species_name in species_list_for_gbif:
         url = f"https://api.gbif.org/v1/species/match?name={species_name}&verbose=true"
         try:
             response = requests.get(url)
@@ -72,6 +87,21 @@ def get_taxonomy(species_list):
         except Exception as e:
             print(f"{species_name:<30} {'Error':<20} {'Error':<20} FAILED")
             logger.error(f"Error retrieving data for '{species_name}': {str(e)}")
+
+    if has_unknown:
+        unknown_family = "Unknown"
+        unknown_genus = "Unknown"
+        unknown_species = "unknown"
+        
+        if unknown_family not in taxonomy[1]:
+            taxonomy[1].append(unknown_family)
+        
+        taxonomy[2][unknown_genus] = unknown_family
+        taxonomy[3][unknown_species] = unknown_genus
+        species_to_genus[unknown_species] = unknown_genus
+        genus_to_family[unknown_genus] = unknown_family
+        
+        print(f"{unknown_species:<30} {unknown_family:<20} {unknown_genus:<20} {'OK'}")
     
     taxonomy[1] = sorted(list(set(taxonomy[1])))
     print("-" * 80)
@@ -85,18 +115,26 @@ def get_taxonomy(species_list):
     logger.info(f"Taxonomy built: {len(taxonomy[1])} families, {len(taxonomy[2])} genera, {len(taxonomy[3])} species")
     return taxonomy, species_to_genus, genus_to_family
 
-def create_mappings(taxonomy):
+def create_mappings(taxonomy, species_list=None):
     """Create index mappings from taxonomy"""
     level_to_idx = {}
     idx_to_level = {}
 
     for level, labels in taxonomy.items():
         if isinstance(labels, list):
+            # Level 1: Family (already sorted)
             level_to_idx[level] = {label: idx for idx, label in enumerate(labels)}
             idx_to_level[level] = {idx: label for idx, label in enumerate(labels)}
-        else:  # Dictionary
-            level_to_idx[level] = {label: idx for idx, label in enumerate(labels.keys())}
-            idx_to_level[level] = {idx: label for idx, label in enumerate(labels.keys())}
+        else:  # Dictionary for levels 2 and 3
+            if level == 3 and species_list is not None:
+                # For species, the order is determined by species_list
+                sorted_keys = species_list
+            else:
+                # For genus, sort alphabetically
+                sorted_keys = sorted(labels.keys())
+            
+            level_to_idx[level] = {label: idx for idx, label in enumerate(sorted_keys)}
+            idx_to_level[level] = {idx: label for idx, label in enumerate(sorted_keys)}
     
     return level_to_idx, idx_to_level
 
@@ -321,9 +359,9 @@ class VideoInferenceProcessor:
         
         # Build taxonomy from species list
         self.taxonomy, self.species_to_genus, self.genus_to_family = get_taxonomy(species_list)
-        self.level_to_idx, self.idx_to_level = create_mappings(self.taxonomy)
-        self.family_list = self.taxonomy[1]
-        self.genus_list = list(self.taxonomy[2].keys())
+        self.level_to_idx, self.idx_to_level = create_mappings(self.taxonomy, species_list)
+        self.family_list = sorted(self.taxonomy[1])
+        self.genus_list = sorted(list(self.taxonomy[2].keys()))
         
         # Load models
         print(f"Loading YOLO model from {yolo_model_path}")
@@ -863,7 +901,7 @@ def main():
     species_list = [
         "Coccinella septempunctata", "Apis mellifera", "Bombus lapidarius", "Bombus terrestris",
         "Eupeodes corollae", "Episyrphus balteatus", "Aglais urticae", "Vespula vulgaris",
-        "Eristalis tenax"
+        "Eristalis tenax", "unknown"
     ]
     
     # Paths (replace with your actual paths)

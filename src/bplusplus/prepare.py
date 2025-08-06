@@ -174,17 +174,18 @@ def _prepare_model_and_clean_images(temp_dir_path: Path):
         print("  ✓ Model weights already exist")
     
     # Add all required classes to safe globals
-    serialization.add_safe_globals([
-        DetectionModel, Sequential, Conv, Conv2d, BatchNorm2d, 
-        SiLU, ReLU, LeakyReLU, MaxPool2d, Linear, Dropout, Upsample,
-        Module, ModuleList, ModuleDict,
-        Bottleneck, C2f, SPPF, Detect, Concat, DFL,
-        # Add torch internal classes
-        torch.nn.parameter.Parameter,
-        torch.Tensor,
-        torch._utils._rebuild_tensor_v2,
-        torch._utils._rebuild_parameter
-    ])
+    if hasattr(serialization, 'add_safe_globals'):
+        serialization.add_safe_globals([
+            DetectionModel, Sequential, Conv, Conv2d, BatchNorm2d, 
+            SiLU, ReLU, LeakyReLU, MaxPool2d, Linear, Dropout, Upsample,
+            Module, ModuleList, ModuleDict,
+            Bottleneck, C2f, SPPF, Detect, Concat, DFL,
+            # Add torch internal classes
+            torch.nn.parameter.Parameter,
+            torch.Tensor,
+            torch._utils._rebuild_tensor_v2,
+            torch._utils._rebuild_parameter
+        ])
     
     return weights_path
 
