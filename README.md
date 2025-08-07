@@ -103,8 +103,11 @@ bplusplus.train(
     data_dir=PREPARED_DATA_DIR,
     output_dir=TRAINED_MODEL_DIR,
     species_list=names
+    # num_workers=0  # Optional: force single-process loading (most stable)
 )
 ```
+
+**Note:** The `num_workers` parameter controls DataLoader multiprocessing (defaults to 0 for stability). You can increase it for potentially faster data loading.
 
 #### Step 4: Download Detection Weights
 The inference pipeline uses a separate, pre-trained YOLO model for initial insect detection. You need to download its weights manually.

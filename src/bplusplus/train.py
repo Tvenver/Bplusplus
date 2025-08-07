@@ -14,18 +14,28 @@ import logging
 from tqdm import tqdm  
 import sys
 
-def train(batch_size=4, epochs=30, patience=3, img_size=640, data_dir='input', output_dir='./output', species_list=None):
+def train(batch_size=4, epochs=30, patience=3, img_size=640, data_dir='input', output_dir='./output', species_list=None, num_workers=4):
     """
     Main function to run the entire training pipeline.
     Sets up datasets, model, training process and handles errors.
+    
+    Args:
+        batch_size (int): Number of samples per batch. Default: 4
+        epochs (int): Maximum number of training epochs. Default: 30
+        patience (int): Early stopping patience (epochs without improvement). Default: 3
+        img_size (int): Target image size for training. Default: 640
+        data_dir (str): Directory containing train/valid subdirectories. Default: 'input'
+        output_dir (str): Directory to save trained model and logs. Default: './output'
+        species_list (list): List of species names for training. Required.
+        num_workers (int): Number of DataLoader worker processes. 
+                          Set to 0 to disable multiprocessing (most stable). Default: 4
     """
     global logger, device
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     logger = logging.getLogger(__name__)
 
-    logger.info(f"Hyperparameters - Batch size: {batch_size}, Epochs: {epochs}, Patience: {patience}, Image size: {img_size}, Data directory: {data_dir}, Output directory: {output_dir}")
-
+    logger.info(f"Hyperparameters - Batch size: {batch_size}, Epochs: {epochs}, Patience: {patience}, Image size: {img_size}, Data directory: {data_dir}, Output directory: {output_dir}, Num workers: {num_workers}")
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -75,14 +85,14 @@ def train(batch_size=4, epochs=30, patience=3, img_size=640, data_dir='input', o
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=4
+        num_workers=num_workers
     )
     
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=4
+        num_workers=num_workers
     )
     
     try:
