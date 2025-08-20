@@ -116,10 +116,9 @@ jobs:
 
     - name: Install dependencies with Poetry
       run: |
-        # Remove existing lock file and regenerate for this platform
-        rm -f poetry.lock
-        poetry lock --no-cache
-        poetry install --only=main
+        # Remove lock file using cross-platform Python command and install without lock file constraints
+        python -c "import os; os.remove('poetry.lock') if os.path.exists('poetry.lock') else None"
+        poetry install --only=main --no-cache
 
     - name: Verify environment markers worked correctly
       run: |
