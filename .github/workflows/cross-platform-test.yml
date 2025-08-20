@@ -116,6 +116,9 @@ jobs:
 
     - name: Install dependencies with Poetry
       run: |
+        # Remove existing lock file and regenerate for this platform
+        rm -f poetry.lock
+        poetry lock --no-cache
         poetry install --only=main
 
     - name: Verify environment markers worked correctly
