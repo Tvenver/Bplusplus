@@ -2,9 +2,9 @@ name: Cross-Platform Compatibility Tests
 
 on:
   push:
-    branches: [ main, master, develop ]
+    branches: [ package ]
   pull_request:
-    branches: [ main, master, develop ]
+    branches: [ package ]
   workflow_dispatch:  # Allow manual triggering
 
 jobs:
