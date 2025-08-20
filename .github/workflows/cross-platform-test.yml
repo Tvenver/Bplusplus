@@ -116,7 +116,7 @@ jobs:
 
     - name: Install dependencies with Poetry
       run: |
-        poetry install --no-dev
+        poetry install --only=main
 
     - name: Verify environment markers worked correctly
       run: |
