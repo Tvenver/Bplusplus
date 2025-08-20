@@ -23,13 +23,13 @@ pillow = [
     # Linux - most flexible
     {version = ">=10.0.0,<12.0.0", markers = "sys_platform == 'linux'"}
 ]
-# PyTorch with platform-specific compatibility to avoid wheel availability issues
+# PyTorch with platform-specific compatibility to handle discontinued macOS Intel support
 torch = [
     # Windows - stable version range
     {version = ">=2.0.0,<2.8.0", markers = "sys_platform == 'win32'"},
-    # macOS Intel - more conservative range due to wheel availability
-    {version = ">=2.0.0,<2.7.0", markers = "sys_platform == 'darwin' and platform_machine == 'x86_64'"},
-    # macOS ARM64 - broader range, better wheel support
+    # macOS Intel - DISCONTINUED after PyTorch 2.2.2, use last supported version
+    {version = ">=2.2.0,<2.3.0", markers = "sys_platform == 'darwin' and platform_machine == 'x86_64'"},
+    # macOS ARM64 - full support, broader range
     {version = ">=2.0.0,<2.8.0", markers = "sys_platform == 'darwin' and platform_machine == 'arm64'"},
     # Linux - most flexible, best wheel support
     {version = ">=2.0.0,<2.8.0", markers = "sys_platform == 'linux'"}

@@ -24,13 +24,8 @@ jobs:
             python-version: "3.12"
             platform-name: "Windows-py312"
           
-          # macOS x86_64 (Intel)
-          - os: macos-13  # Intel-based
-            python-version: "3.10"
-            platform-name: "macOS-Intel-py310"
-          - os: macos-13
-            python-version: "3.11"
-            platform-name: "macOS-Intel-py311"
+          # NOTE: macOS Intel (x86_64) REMOVED - PyTorch discontinued support after 2.2.2
+          # Users on macOS Intel should use PyTorch 2.2.2 or switch to ARM64 hardware
           
           # macOS ARM64 (Apple Silicon)
           - os: macos-14  # Apple Silicon
@@ -44,9 +39,9 @@ jobs:
             platform-name: "macOS-ARM64-py312"
           
           # Linux x86_64
-          - os: ubuntu-20.04
+          - os: ubuntu-24.04
             python-version: "3.10"
-            platform-name: "Linux-py310-ubuntu20"
+            platform-name: "Linux-py310-ubuntu24"
           - os: ubuntu-22.04
             python-version: "3.11"
             platform-name: "Linux-py311-ubuntu22"
@@ -318,12 +313,14 @@ jobs:
           echo "🎉 SUCCESS: All platforms passed!"
           echo ""
           echo "✅ Windows (Python 3.10, 3.11, 3.12)"
-          echo "✅ macOS Intel (Python 3.10, 3.11)"
           echo "✅ macOS Apple Silicon (Python 3.10, 3.11, 3.12)"
           echo "✅ Linux Ubuntu (Python 3.10, 3.11, 3.12)"
           echo ""
-          echo "Your bplusplus package is compatible across all platforms!"
-          echo "Users can safely install on Windows, macOS, and Linux."
+          echo "ℹ️  Note: macOS Intel (x86_64) excluded - PyTorch discontinued support"
+          echo "   macOS Intel users should use PyTorch 2.2.2 or upgrade to ARM64 hardware"
+          echo ""
+          echo "Your bplusplus package is compatible across all supported platforms!"
+          echo "Users can safely install on Windows, macOS ARM64, and Linux."
         else
           echo "❌ FAILURE: Some platform tests failed"
           echo ""
