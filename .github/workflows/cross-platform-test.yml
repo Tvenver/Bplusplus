@@ -84,11 +84,21 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-pip-${{ matrix.python-version }}-
 
-    - name: Install system dependencies (Ubuntu)
-      if: startsWith(matrix.os, 'ubuntu')
+    - name: Install system dependencies (Linux)
+      if: runner.os == 'Linux'
       run: |
         sudo apt-get update
-        sudo apt-get install -y libgl1-mesa-glx libglib2.0-0 libsm6 libxext6 libxrender-dev libgomp1
+        # Install common packages that work across Ubuntu versions
+        sudo apt-get install -y \
+          libglib2.0-0 \
+          libsm6 \
+          libxext6 \
+          libxrender-dev \
+          libgomp1 \
+          libgcc-s1
+        
+        # Try to install OpenGL libraries (different names in different Ubuntu versions)
+        sudo apt-get install -y libgl1-mesa-dri || sudo apt-get install -y libgl1-mesa-glx || true
 
     - name: Install system dependencies (macOS)
       if: startsWith(matrix.os, 'macos')
