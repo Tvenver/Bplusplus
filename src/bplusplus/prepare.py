@@ -26,8 +26,9 @@ from ultralytics.nn.modules.block import DFL
 from ultralytics.nn.modules.conv import Conv
 from ultralytics.nn.tasks import DetectionModel
 
+from clean import clean_dataset_by_color_outliers
 
-def prepare(input_directory: str, output_directory: str, img_size: int = 40):
+def prepare(input_directory: str, output_directory: str, img_size: int = 40, clean_percent: Optional[float] = None):
     """
     Prepares a YOLO classification dataset by performing the following steps:
     1. Copies images from input directory to temporary directory and creates class mapping.
@@ -35,12 +36,14 @@ def prepare(input_directory: str, output_directory: str, img_size: int = 40):
     3. Runs YOLO inference to generate detection labels (bounding boxes) for the images.
     4. Cleans up orphaned images, invalid labels, and updates labels with class indices.
     5. Crops detected objects from images based on bounding boxes and resizes them.
-    6. Splits data into train/valid sets with classification folder structure (train/class_name/image.jpg).
+    6. Optionally applies color outlier cleaning if clean_percent is specified.
+    7. Splits data into train/valid sets with classification folder structure (train/class_name/image.jpg).
 
     Args:
         input_directory (str): The path to the input directory containing the images.
         output_directory (str): The path to the output directory where the prepared classification dataset will be saved.
         img_size (int, optional): The target size for the smallest dimension of cropped images. Defaults to 40.
+        clean_percent (float, optional): Percentage of images to keep per class during color outlier cleaning. Defaults to None.
     """
     input_directory = Path(input_directory)
     output_directory = Path(output_directory)
@@ -89,9 +92,35 @@ def prepare(input_directory: str, output_directory: str, img_size: int = 40):
         )
         print(f"✓ Step 4 completed: Processed {len(class_idxs)} classes")
         print()
+
+        # Step 5: applying Color Outlier Cleaning if Specified
+        if clean_percent is not None:
+            print('STEP 5: Applying color outlier cleaning...')
+            print("-" * 50)
+
+            images_path = temp_dir_path / "images"
+
+            clean_dataset_by_color_outliers(
+                input_dir=str(images_path),
+                output_dir=str(temp_dir_path / "cleaned"),
+                deleted_dir=str(temp_dir_path / "deleted"),
+                keep_percent=clean_percent * 100
+            )
+
+            # replace directory with the now updated clean images
+            shutil.rmtree(images_path)
+            shutil.move(str(temp_dir_path / "cleaned"), str(images_path))
+
+            #cleanup deleted directory
+            if (temp_dir_path / "deleted").exists():
+                shutil.rmtree(temp_dir_path / "deleted")
+
+            print("✓ Step 5 completed: Color outlier cleaning applied!")
+            print()
+
         
-        # Step 7-9: Finalize dataset
-        print("STEP 5: Creating classification dataset with cropped images...")
+        # Step 6: Finalize dataset
+        print("STEP 6: Creating classification dataset with cropped images...")
         print("-" * 50)
         _finalize_dataset(
             class_mapping, temp_dir_path, output_directory, 
