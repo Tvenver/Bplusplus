@@ -20,14 +20,13 @@ Using the `Bplusplus` library, this pipeline automates the entire machine learni
 - **Video Inference & Tracking**: Processes video files to detect, classify, and track individual insects over time, providing aggregated predictions.
 ## Pipeline Overview
 
-The process is broken down into six main steps, all detailed in the `full_pipeline.ipynb` notebook:
+The process is broken down into five main steps, all detailed in the `full_pipeline.ipynb` notebook:
 
 1.  **Collect Data**: Select your target species and fetch raw insect images from the web.
 2.  **Prepare Data**: Filter, clean, and prepare images for training.
 3.  **Train Model**: Train the hierarchical classification model.
-4.  **Download Weights**: Fetch pre-trained weights for the detection model.
-5.  **Test Model**: Evaluate the performance of the trained model.
-6.  **Run Inference**: Run the full pipeline on a video file for real-world application.
+4.  **Validate Model**: Evaluate the performance of the trained model.
+5.  **Run Inference**: Run the full pipeline on a video file for real-world application.
 
 ## How to Use
 
@@ -85,7 +84,9 @@ PREPARED_DATA_DIR = Path("./prepared_data")
 bplusplus.prepare(
     input_directory=GBIF_DATA_DIR,
     output_directory=PREPARED_DATA_DIR,
-    img_size=640  # Target image size for training
+    img_size=640,        # Target image size for training
+    conf=0.6,            # Detection confidence threshold (0-1)
+    valid_fraction=0.1,  # Validation split ratio (0-1), set to 0 for no validation
 )
 ```
 
@@ -102,40 +103,69 @@ bplusplus.train(
     img_size=640,
     data_dir=PREPARED_DATA_DIR,
     output_dir=TRAINED_MODEL_DIR,
-    species_list=names
-    # num_workers=0  # Optional: force single-process loading (most stable)
+    species_list=names,
+    backbone="resnet50",  # Choose: "resnet18", "resnet50", or "resnet101"
+    # num_workers=0,      # Optional: force single-process loading (most stable)
+    # train_transforms=custom_transforms,  # Optional: custom torchvision transforms
 )
 ```
 
-**Note:** The `num_workers` parameter controls DataLoader multiprocessing (defaults to 0 for stability). You can increase it for potentially faster data loading.
+**Note:** The `num_workers` parameter controls DataLoader multiprocessing (defaults to 0 for stability). The `backbone` parameter allows you to choose between different ResNet architectures—use `resnet18` for faster training or `resnet101` for potentially better accuracy.
 
-#### Step 4: Download Detection Weights
-The inference pipeline uses a separate, pre-trained YOLO model for initial insect detection. You need to download its weights manually.
+#### Step 4: Validate Model
+Evaluate the trained model on a held-out validation set. This calculates precision, recall, and F1-score at all taxonomic levels.
 
-You can download the weights file from [this link](https://github.com/Tvenver/Bplusplus/releases/download/v1.2.3/v11small-generic.pt).
+```python
+HIERARCHICAL_MODEL_PATH = TRAINED_MODEL_DIR / "best_multitask.pt"
 
-Place it in the `trained_model` directory and ensure it is named `yolo_weights.pt`.
+results = bplusplus.validate(
+    species_list=names,
+    validation_dir=PREPARED_DATA_DIR / "valid",
+    hierarchical_weights=HIERARCHICAL_MODEL_PATH,
+    img_size=640,           # Must match training
+    batch_size=32,
+    backbone="resnet50",    # Must match training
+)
+```
 
 #### Step 5: Run Inference on Video
-Process a video file to detect, classify, and track insects. The final output is an annotated video and a CSV file with aggregated results for each tracked insect.
+Process a video file to detect, classify, and track insects using motion-based detection. The pipeline uses background subtraction (GMM) to detect moving insects, tracks them across frames, and classifies confirmed tracks.
+
+**Output files generated in `output_dir`:**
+- `{video}_annotated.mp4` - Video showing confirmed tracks with classifications
+- `{video}_debug.mp4` - Debug video with motion mask and all detections
+- `{video}_results.csv` - Aggregated results per confirmed track
+- `{video}_detections.csv` - Frame-by-frame detection data
 
 ```python
 VIDEO_INPUT_PATH = Path("my_video.mp4")
-VIDEO_OUTPUT_PATH = Path("my_video_annotated.mp4")
+OUTPUT_DIR = Path("./output")
 HIERARCHICAL_MODEL_PATH = TRAINED_MODEL_DIR / "best_multitask.pt"
-YOLO_WEIGHTS_PATH = TRAINED_MODEL_DIR / "yolo_weights.pt"
 
-bplusplus.inference(
+results = bplusplus.inference(
     species_list=names,
-    yolo_model_path=YOLO_WEIGHTS_PATH,
     hierarchical_model_path=HIERARCHICAL_MODEL_PATH,
-    confidence_threshold=0.35,
     video_path=VIDEO_INPUT_PATH,
-    output_path=VIDEO_OUTPUT_PATH,
-    tracker_max_frames=60,
-    fps=15  # Optional: set processing FPS
+    output_dir=OUTPUT_DIR,
+    fps=None,               # None = process all frames
+    backbone="resnet50",    # Must match training
+)
+
+print(f"Detected {results['tracks']} tracks ({results['confirmed_tracks']} confirmed)")
+```
+
+**Custom Detection Configuration:**
+
+For advanced control over detection parameters, provide a YAML config file:
+
+```python
+results = bplusplus.inference(
+    ...,
+    config="detection_config.yaml"
 )
 ```
+
+Download a template config from the [releases page](https://github.com/Tvenver/Bplusplus/releases). Parameters control cohesiveness filtering, shape filtering, tracking behavior, and path topology analysis for confirming insect-like movement.
 
 ### Customization
 
@@ -168,8 +198,9 @@ names_with_unknown = [
 The pipeline will create the following directories to store artifacts:
 
 - `GBIF_data/`: Stores the raw images downloaded from GBIF.
-- `prepared_data/`: Contains the cleaned, cropped, and resized images ready for training.
-- `trained_model/`: Saves the trained model weights (`best_multitask.pt`) and pre-trained detection weights.
+- `prepared_data/`: Contains the cleaned, cropped, and resized images ready for training (`train/` and optionally `valid/` subdirectories).
+- `trained_model/`: Saves the trained model weights (`best_multitask.pt`).
+- `output/`: Inference results including annotated videos and CSV files.
 
 # Citation
 

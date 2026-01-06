@@ -1,62 +1,109 @@
 import cv2
 import time
 import os
-import sys
-import numpy as np
+import yaml
 import json
+import numpy as np
 import pandas as pd
 from datetime import datetime
-from pathlib import Path
-from .tracker import InsectTracker
-import torch
-import torchvision.transforms as T
-from torchvision.models.detection import fasterrcnn_resnet50_fpn
-from ultralytics import YOLO
-from torchvision import transforms
-from PIL import Image
-import torch.nn as nn
-from torchvision.models import resnet50
-import requests
-import logging
 from collections import defaultdict
 import uuid
+import argparse
 
-# Add this check for backwards compatibility
+import torch
+import torch.nn as nn
+from torchvision import transforms, models
+from PIL import Image
+import requests
+import logging
+
+from .tracker import InsectTracker
+from .insect_detector import (
+    DEFAULT_DETECTION_CONFIG,
+    get_default_config,
+    build_detection_params,
+    extract_motion_detections,
+    analyze_path_topology,
+    check_track_consistency,
+)
+
+# Torch serialization compatibility
 if hasattr(torch.serialization, 'add_safe_globals'):
     torch.serialization.add_safe_globals([
         'torch.LongTensor',
         'torch.cuda.LongTensor',
         'torch.FloatStorage',
-        'torch.FloatStorage',
         'torch.cuda.FloatStorage',
     ])
 
-# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 # ============================================================================
-# UTILITY FUNCTIONS
+# CONFIGURATION
+# ============================================================================
+
+def load_config(config_path):
+    """
+    Load detection configuration from YAML or JSON file.
+    
+    Args:
+        config_path: Path to config file (.yaml, .yml, or .json)
+        
+    Returns:
+        dict: Configuration parameters
+    """
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    
+    ext = os.path.splitext(config_path)[1].lower()
+    
+    with open(config_path, 'r') as f:
+        if ext in ['.yaml', '.yml']:
+            config = yaml.safe_load(f)
+        elif ext == '.json':
+            config = json.load(f)
+        else:
+            raise ValueError(f"Unsupported config format: {ext}")
+    
+    # Merge with defaults
+    params = get_default_config()
+    for key, value in config.items():
+        if key in params:
+            params[key] = value
+        else:
+            logger.warning(f"Unknown config parameter ignored: {key}")
+    
+    return params
+
+
+# ============================================================================
+# TAXONOMY UTILITIES
 # ============================================================================
 
 def get_taxonomy(species_list):
     """
-    Retrieves taxonomic information for a list of species from GBIF API.
-    Creates a hierarchical taxonomy dictionary with family, genus, and species relationships.
+    Retrieve taxonomic information from GBIF API.
+    
+    Args:
+        species_list: List of species names
+        
+    Returns:
+        tuple: (taxonomy_dict, species_to_genus, genus_to_family)
     """
     taxonomy = {1: [], 2: {}, 3: {}}
     species_to_genus = {}
     genus_to_family = {}
     
-    species_list_for_gbif = [s for s in species_list if s.lower() != 'unknown']
-    has_unknown = len(species_list_for_gbif) != len(species_list)
+    species_for_gbif = [s for s in species_list if s.lower() != 'unknown']
+    has_unknown = len(species_for_gbif) != len(species_list)
     
-    logger.info(f"Building taxonomy from GBIF for {len(species_list_for_gbif)} species")
-    
+    logger.info(f"Building taxonomy from GBIF for {len(species_for_gbif)} species")
     print(f"\n{'Species':<30} {'Family':<20} {'Genus':<20} {'Status'}")
     print("-" * 80)
     
-    for species_name in species_list_for_gbif:
+    for species_name in species_for_gbif:
         url = f"https://api.gbif.org/v1/species/match?name={species_name}&verbose=true"
         try:
             response = requests.get(url)
@@ -68,862 +115,1168 @@ def get_taxonomy(species_list):
                 
                 if family and genus:
                     print(f"{species_name:<30} {family:<20} {genus:<20} OK")
-                    
                     species_to_genus[species_name] = genus
                     genus_to_family[genus] = family
-                    
                     if family not in taxonomy[1]:
                         taxonomy[1].append(family)
-                    
                     taxonomy[2][genus] = family
                     taxonomy[3][species_name] = genus
                 else:
                     print(f"{species_name:<30} {'Not found':<20} {'Not found':<20} ERROR")
-                    logger.error(f"Species '{species_name}' found but missing family/genus data")
+                    logger.error(f"Species '{species_name}' missing family/genus")
             else:
                 print(f"{species_name:<30} {'Not found':<20} {'Not found':<20} ERROR")
                 logger.error(f"Species '{species_name}' not found in GBIF")
-                
         except Exception as e:
             print(f"{species_name:<30} {'Error':<20} {'Error':<20} FAILED")
-            logger.error(f"Error retrieving data for '{species_name}': {str(e)}")
+            logger.error(f"Error for '{species_name}': {e}")
 
     if has_unknown:
-        unknown_family = "Unknown"
-        unknown_genus = "Unknown"
-        unknown_species = "unknown"
-        
-        if unknown_family not in taxonomy[1]:
-            taxonomy[1].append(unknown_family)
-        
-        taxonomy[2][unknown_genus] = unknown_family
-        taxonomy[3][unknown_species] = unknown_genus
-        species_to_genus[unknown_species] = unknown_genus
-        genus_to_family[unknown_genus] = unknown_family
-        
-        print(f"{unknown_species:<30} {unknown_family:<20} {unknown_genus:<20} {'OK'}")
+        if "Unknown" not in taxonomy[1]:
+            taxonomy[1].append("Unknown")
+        taxonomy[2]["Unknown"] = "Unknown"
+        taxonomy[3]["unknown"] = "Unknown"
+        species_to_genus["unknown"] = "Unknown"
+        genus_to_family["Unknown"] = "Unknown"
+        print(f"{'unknown':<30} {'Unknown':<20} {'Unknown':<20} OK")
     
-    taxonomy[1] = sorted(list(set(taxonomy[1])))
+    taxonomy[1] = sorted(set(taxonomy[1]))
     print("-" * 80)
     
-    # Print indices
-    for level, name, items in [(1, "Family", taxonomy[1]), (2, "Genus", taxonomy[2].keys()), (3, "Species", species_list)]:
+    for level, name, items in [(1, "Family", taxonomy[1]), 
+                                (2, "Genus", taxonomy[2].keys()), 
+                                (3, "Species", species_list)]:
         print(f"\n{name} indices:")
         for i, item in enumerate(items):
             print(f"  {i}: {item}")
     
-    logger.info(f"Taxonomy built: {len(taxonomy[1])} families, {len(taxonomy[2])} genera, {len(taxonomy[3])} species")
+    logger.info(f"Taxonomy: {len(taxonomy[1])} families, {len(taxonomy[2])} genera, {len(taxonomy[3])} species")
     return taxonomy, species_to_genus, genus_to_family
 
+
 def create_mappings(taxonomy, species_list=None):
-    """Create index mappings from taxonomy"""
+    """Create index mappings from taxonomy."""
     level_to_idx = {}
     idx_to_level = {}
 
     for level, labels in taxonomy.items():
         if isinstance(labels, list):
-            # Level 1: Family (already sorted)
             level_to_idx[level] = {label: idx for idx, label in enumerate(labels)}
             idx_to_level[level] = {idx: label for idx, label in enumerate(labels)}
-        else:  # Dictionary for levels 2 and 3
-            if level == 3 and species_list is not None:
-                # For species, the order is determined by species_list
-                sorted_keys = species_list
-            else:
-                # For genus, sort alphabetically
-                sorted_keys = sorted(labels.keys())
-            
+        else:
+            sorted_keys = species_list if level == 3 and species_list else sorted(labels.keys())
             level_to_idx[level] = {label: idx for idx, label in enumerate(sorted_keys)}
             idx_to_level[level] = {idx: label for idx, label in enumerate(sorted_keys)}
     
     return level_to_idx, idx_to_level
 
+
 # ============================================================================
-# MODEL CLASSES
+# MODEL
 # ============================================================================
 
 class HierarchicalInsectClassifier(nn.Module):
-    def __init__(self, num_classes_per_level):
-        """
-        Args:
-            num_classes_per_level (list): Number of classes for each taxonomic level [family, genus, species]
-        """
-        super(HierarchicalInsectClassifier, self).__init__()
+    """Hierarchical classifier with ResNet backbone and multi-branch heads."""
+    
+    def __init__(self, num_classes_per_level, backbone: str = "resnet50"):
+        super().__init__()
+        self.backbone = self._build_backbone(backbone)
+        self.backbone_name = backbone
+        backbone_features = self.backbone.fc.in_features
+        self.backbone.fc = nn.Identity()
         
-        self.backbone = resnet50(pretrained=True)
-        backbone_output_features = self.backbone.fc.in_features
-        self.backbone.fc = nn.Identity()  # Remove the final fully connected layer
-        
-        self.branches = nn.ModuleList()
-        for num_classes in num_classes_per_level:
-            branch = nn.Sequential(
-                nn.Linear(backbone_output_features, 512),
+        self.branches = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(backbone_features, 512),
                 nn.ReLU(),
                 nn.Dropout(0.5),
                 nn.Linear(512, num_classes)
-            )
-            self.branches.append(branch)
-        
+            ) for num_classes in num_classes_per_level
+        ])
         self.num_levels = len(num_classes_per_level)
+    
+    @staticmethod
+    def _build_backbone(backbone: str):
+        """Build ResNet backbone by name."""
+        name = backbone.lower()
+        if name == "resnet18":
+            return models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+        if name == "resnet50":
+            return models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
+        if name == "resnet101":
+            return models.resnet101(weights=models.ResNet101_Weights.DEFAULT)
+        raise ValueError(f"Unsupported backbone '{backbone}'. Choose from 'resnet18', 'resnet50', 'resnet101'.")
         
     def forward(self, x):
-        R0 = self.backbone(x)
-        
-        outputs = []
-        for branch in self.branches:
-            outputs.append(branch(R0))
-            
-        return outputs
+        features = self.backbone(x)
+        return [branch(features) for branch in self.branches]
+
 
 # ============================================================================
-# VISUALIZATION UTILITIES
+# VISUALIZATION
 # ============================================================================
 
 class FrameVisualizer:
-    """Modern, slick visualization system for insect detection and tracking"""
+    """Visualization utilities for detection overlay."""
     
-    # Modern color palette - vibrant but professional
     COLORS = [
-        (68, 189, 50),    # Vibrant Green
-        (255, 59, 48),    # Red
-        (0, 122, 255),    # Blue  
-        (255, 149, 0),    # Orange
-        (175, 82, 222),   # Purple
-        (255, 204, 0),    # Yellow
-        (50, 173, 230),   # Light Blue
-        (255, 45, 85),    # Pink
-        (48, 209, 88),    # Light Green
-        (90, 200, 250),   # Sky Blue
-        (255, 159, 10),   # Amber
-        (191, 90, 242),   # Lavender
+        (68, 189, 50), (255, 59, 48), (0, 122, 255), (255, 149, 0),
+        (175, 82, 222), (255, 204, 0), (50, 173, 230), (255, 45, 85),
+        (48, 209, 88), (90, 200, 250), (255, 159, 10), (191, 90, 242),
     ]
     
     @staticmethod
     def get_track_color(track_id):
-        """Get a consistent, vibrant color for a track ID"""
         if track_id is None:
-            return (68, 189, 50)  # Default green for untracked
-        
-        # Generate consistent index from track_id
+            return (68, 189, 50)
         try:
             track_uuid = uuid.UUID(track_id)
         except (ValueError, TypeError):
             track_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, str(track_id))
-            
-        color_index = track_uuid.int % len(FrameVisualizer.COLORS)
-        return FrameVisualizer.COLORS[color_index]
+        return FrameVisualizer.COLORS[track_uuid.int % len(FrameVisualizer.COLORS)]
     
     @staticmethod
-    def draw_rounded_rectangle(frame, pt1, pt2, color, thickness, radius=8):
-        """Draw a rounded rectangle"""
-        x1, y1 = pt1
-        x2, y2 = pt2
-        
-        # Draw main rectangle
-        cv2.rectangle(frame, (x1 + radius, y1), (x2 - radius, y2), color, thickness)
-        cv2.rectangle(frame, (x1, y1 + radius), (x2, y2 - radius), color, thickness)
-        
-        # Draw corners
-        cv2.circle(frame, (x1 + radius, y1 + radius), radius, color, thickness)
-        cv2.circle(frame, (x2 - radius, y1 + radius), radius, color, thickness)
-        cv2.circle(frame, (x1 + radius, y2 - radius), radius, color, thickness)
-        cv2.circle(frame, (x2 - radius, y2 - radius), radius, color, thickness)
+    def draw_path(frame, path, track_id):
+        """Draw track path on frame."""
+        if len(path) < 2:
+            return
+        color = FrameVisualizer.get_track_color(track_id)
+        path_points = np.array(path, dtype=np.int32)
+        cv2.polylines(frame, [path_points], False, color, 2)
+        # Draw center point
+        cx, cy = path[-1]
+        cv2.circle(frame, (int(cx), int(cy)), 4, color, -1)
     
     @staticmethod
-    def draw_gradient_background(frame, x1, y1, x2, y2, color, alpha=0.85):
-        """Draw a modern gradient background with rounded corners"""
-        overlay = frame.copy()
+    def draw_detection(frame, x1, y1, x2, y2, track_id, detection_data):
+        """Draw bounding box and classification label on frame."""
+        color = FrameVisualizer.get_track_color(track_id)
+        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
         
-        # Create gradient effect
-        height = y2 - y1
-        for i in range(height):
-            intensity = 1.0 - (i / height) * 0.3  # Gradient from top to bottom
-            gradient_color = tuple(int(c * intensity) for c in color)
-            cv2.rectangle(overlay, (x1, y1 + i), (x2, y1 + i + 1), gradient_color, -1)
+        track_display = f"ID: {str(track_id)[:8]}" if track_id else "NEW"
+        lines = [track_display]
         
-        # Blend with original frame
-        cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
-    
-    @staticmethod
-    def draw_detection_on_frame(frame, x1, y1, x2, y2, track_id, detection_data):
-        """Draw modern, sleek detection visualization"""
-        
-        # Get colors
-        primary_color = FrameVisualizer.get_track_color(track_id)
-        
-        # Simple, clean bounding box
-        box_thickness = 2
-        
-        # Draw single clean rectangle
-        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), primary_color, box_thickness)
-        
-        # Prepare label content without emojis
-        if track_id is not None:
-            track_short = str(track_id)[:8]
-            track_display = f"ID: {track_short}"
-        else:
-            track_display = "NEW"
-        
-        # Classification results without icons
-        classification_lines = []
-        
-        for level, key in [("family", "family_confidence"), 
-                          ("genus", "genus_confidence"), 
-                          ("species", "species_confidence")]:
+        for level, conf_key in [("family", "family_confidence"), 
+                                ("genus", "genus_confidence"), 
+                                ("species", "species_confidence")]:
             if detection_data.get(level):
-                conf = detection_data.get(key, 0)
                 name = detection_data[level]
-                # Truncate long names
-                if len(name) > 18:
-                    name = name[:15] + "..."
-                level_short = level[0].upper()  # F, G, S
-                classification_lines.append(f"{level_short}: {name}")
-                classification_lines.append(f"   {conf:.1%}")
+                conf = detection_data.get(conf_key, 0)
+                name = name[:15] + "..." if len(name) > 18 else name
+                lines.append(f"{level[0].upper()}: {name}")
+                lines.append(f"   {conf:.1%}")
         
-        if not classification_lines and track_id is None:
+        if not lines[1:] and track_id is None:
             return
         
-        # Calculate label box dimensions with smaller, lighter font
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.45
-        thickness = 1
-        padding = 8
-        line_spacing = 6
+        font, scale, thickness = cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1
+        padding, spacing = 8, 6
+        text_sizes = [cv2.getTextSize(line, font, scale, thickness)[0] for line in lines]
+        max_w = max(s[0] for s in text_sizes)
+        text_h = text_sizes[0][1]
         
-        # Calculate text dimensions
-        all_lines = [track_display] + classification_lines
-        text_sizes = [cv2.getTextSize(line, font, font_scale, thickness)[0] for line in all_lines]
-        max_w = max(size[0] for size in text_sizes) if text_sizes else 100
-        text_h = text_sizes[0][1] if text_sizes else 20
-        
-        total_h = len(all_lines) * (text_h + line_spacing) + padding * 2
-        label_w = max_w + padding * 2
-        
-        # Position label box (above bbox, or below if no space)
+        total_h = len(lines) * (text_h + spacing) + padding * 2
         label_x1 = max(0, int(x1))
         label_y1 = max(0, int(y1) - total_h - 5)
         if label_y1 < 0:
             label_y1 = int(y2) + 5
-        
-        label_x2 = min(frame.shape[1], label_x1 + label_w)
+        label_x2 = min(frame.shape[1], label_x1 + max_w + padding * 2)
         label_y2 = min(frame.shape[0], label_y1 + total_h)
         
-        # Draw modern gradient background with rounded corners
-        FrameVisualizer.draw_gradient_background(frame, label_x1, label_y1, label_x2, label_y2, 
-                                               (20, 20, 20), alpha=0.88)
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (label_x1, label_y1), (label_x2, label_y2), (20, 20, 20), -1)
+        cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
+        cv2.rectangle(frame, (label_x1, label_y1), (label_x2, label_y2), color, 1)
         
-        # Add subtle border
-        FrameVisualizer.draw_rounded_rectangle(frame, 
-                                             (label_x1, label_y1), 
-                                             (label_x2, label_y2), 
-                                             primary_color, 1, radius=6)
-        
-        # Draw text with modern styling
-        current_y = label_y1 + padding + text_h
-        
-        for i, line in enumerate(all_lines):
-            if i == 0:  # Track ID line - use primary color
-                text_color = primary_color
-                line_thickness = 1
-            elif "%" in line:  # Confidence lines - use lighter color
-                text_color = (160, 160, 160)
-                line_thickness = 1
-            else:  # Classification name lines - use white
-                text_color = (255, 255, 255)
-                line_thickness = 1
-            
-            # Add subtle text shadow for readability
-            cv2.putText(frame, line, (label_x1 + padding + 1, current_y + 1), 
-                       font, font_scale, (0, 0, 0), 1, cv2.LINE_AA)
-            
-            # Main text
-            cv2.putText(frame, line, (label_x1 + padding, current_y), 
-                       font, font_scale, text_color, line_thickness, cv2.LINE_AA)
-            
-            current_y += text_h + line_spacing
+        y = label_y1 + padding + text_h
+        for i, line in enumerate(lines):
+            text_color = color if i == 0 else ((160, 160, 160) if "%" in line else (255, 255, 255))
+            cv2.putText(frame, line, (label_x1 + padding, y), font, scale, text_color, thickness, cv2.LINE_AA)
+            y += text_h + spacing
+
 
 # ============================================================================
-# MAIN PROCESSING CLASS
+# VIDEO PROCESSOR
 # ============================================================================
 
 class VideoInferenceProcessor:
-    def __init__(self, species_list, yolo_model_path, hierarchical_model_path, 
-                 confidence_threshold=0.35, device_id="video_processor"):
+    """
+    Processes video frames for insect detection and classification.
+    
+    Combines motion-based detection with hierarchical classification
+    and track-based prediction aggregation.
+    """
+    
+    def __init__(self, species_list, hierarchical_model_path, params, backbone="resnet50"):
+        """
+        Initialize the processor.
         
+        Args:
+            species_list: List of species names for classification
+            hierarchical_model_path: Path to trained model weights
+            params: Detection parameters dict
+            backbone: ResNet backbone ('resnet18', 'resnet50', 'resnet101')
+        """
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.species_list = species_list
-        self.confidence_threshold = confidence_threshold
-        self.device_id = device_id
+        self.params = params
         
         print(f"Using device: {self.device}")
         
-        # Build taxonomy from species list
+        # Build taxonomy
         self.taxonomy, self.species_to_genus, self.genus_to_family = get_taxonomy(species_list)
         self.level_to_idx, self.idx_to_level = create_mappings(self.taxonomy, species_list)
         self.family_list = sorted(self.taxonomy[1])
-        self.genus_list = sorted(list(self.taxonomy[2].keys()))
+        self.genus_list = sorted(self.taxonomy[2].keys())
         
-        # Load models
-        print(f"Loading YOLO model from {yolo_model_path}")
-        self.yolo_model = YOLO(yolo_model_path)
+        # Motion detection setup
+        self.back_sub = cv2.createBackgroundSubtractorMOG2(
+            history=500, varThreshold=16, detectShadows=False
+        )
+        self.morph_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         
+        # Load classification model
         print(f"Loading hierarchical model from {hierarchical_model_path}")
         checkpoint = torch.load(hierarchical_model_path, map_location='cpu')
         state_dict = checkpoint.get("model_state_dict", checkpoint)
         
-        num_classes_per_level = [len(self.family_list), len(self.genus_list), len(self.species_list)]
-        print(f"Model architecture: {num_classes_per_level} classes per level")
+        # Use backbone from checkpoint if available, otherwise use provided
+        model_backbone = checkpoint.get("backbone", backbone)
+        if model_backbone != backbone:
+            print(f"Note: Using backbone '{model_backbone}' from checkpoint (overrides '{backbone}')")
         
-        self.classification_model = HierarchicalInsectClassifier(num_classes_per_level)
-        self.classification_model.load_state_dict(state_dict, strict=False)
-        self.classification_model.to(self.device)
-        self.classification_model.eval()
+        num_classes = [len(self.family_list), len(self.genus_list), len(self.species_list)]
+        print(f"Model architecture: {num_classes} classes per level, backbone: {model_backbone}")
         
-        # Classification preprocessing
-        self.classification_transform = transforms.Compose([
+        self.model = HierarchicalInsectClassifier(num_classes, backbone=model_backbone)
+        self.model.load_state_dict(state_dict, strict=False)
+        self.model.to(self.device)
+        self.model.eval()
+        
+        self.transform = transforms.Compose([
             transforms.Resize((768, 768)),
             transforms.CenterCrop(640),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
         
+        # Track state
         self.all_detections = []
-        self.frame_count = 0
-        print("Models loaded successfully!")
+        self.track_paths = defaultdict(list)
+        self.track_areas = defaultdict(list)
+        
+        print("Processor initialized successfully!")
     
-    # ------------------------------------------------------------------------
-    # UTILITY METHODS
-    # ------------------------------------------------------------------------
+    def _extract_detections(self, frame):
+        """Extract motion-based detections."""
+        detections, fg_mask = extract_motion_detections(
+            frame, self.back_sub, self.morph_kernel, self.params
+        )
+        return detections, fg_mask
     
-    def convert_bbox_to_normalized(self, x, y, x2, y2, width, height):
-        x_center = (x + x2) / 2.0 / width
-        y_center = (y + y2) / 2.0 / height
-        norm_width = (x2 - x) / width
-        norm_height = (y2 - y) / height
-        return [x_center, y_center, norm_width, norm_height]
-    
-    def store_detection(self, detection_data, timestamp, frame_time_seconds, track_id, bbox):
-        """Store detection for final aggregation"""
-        payload = {
-            "timestamp": timestamp,
-            "frame_time_seconds": frame_time_seconds,
-            "track_id": track_id,
-            "bbox": bbox,
-            **detection_data
-        }
-        
-        self.all_detections.append(payload)
-        
-        # Print frame-by-frame prediction (only for processed frames)
-        track_display = str(track_id)[:8] if track_id else "NEW"
-        species = payload.get('species', 'Unknown')
-        species_conf = payload.get('species_confidence', 0)
-        print(f"Processed {frame_time_seconds:6.2f}s | Track {track_display} | {species} ({species_conf:.1%})")
-    
-    # ------------------------------------------------------------------------
-    # DETECTION AND CLASSIFICATION METHODS
-    # ------------------------------------------------------------------------
-    
-    def process_classification_results(self, classification_outputs):
-        """Process raw classification outputs to get predictions and probabilities"""
-        family_output = classification_outputs[0].cpu().numpy().flatten()
-        genus_output = classification_outputs[1].cpu().numpy().flatten()  
-        species_output = classification_outputs[2].cpu().numpy().flatten()
-        
-        # Apply softmax to get probabilities
-        family_probs = torch.softmax(classification_outputs[0], dim=1).cpu().numpy().flatten()
-        genus_probs = torch.softmax(classification_outputs[1], dim=1).cpu().numpy().flatten()
-        species_probs = torch.softmax(classification_outputs[2], dim=1).cpu().numpy().flatten()
-        
-        # Get top predictions
-        family_idx = np.argmax(family_probs)
-        genus_idx = np.argmax(genus_probs)
-        species_idx = np.argmax(species_probs)
-        
-        # Get names
-        family_name = self.family_list[family_idx] if family_idx < len(self.family_list) else f"Family_{family_idx}"
-        genus_name = self.genus_list[genus_idx] if genus_idx < len(self.genus_list) else f"Genus_{genus_idx}"
-        species_name = self.species_list[species_idx] if species_idx < len(self.species_list) else f"Species_{species_idx}"
-        
-        detection_data = {
-            "family": family_name,
-            "genus": genus_name, 
-            "species": species_name,
-            "family_confidence": float(family_probs[family_idx]),
-            "genus_confidence": float(genus_probs[genus_idx]),
-            "species_confidence": float(species_probs[species_idx]),
-            "family_probs": family_probs.tolist(),
-            "genus_probs": genus_probs.tolist(),
-            "species_probs": species_probs.tolist()
-        }
-        
-        return detection_data
-    
-    def _extract_yolo_detections(self, frame):
-        """Extract and validate YOLO detections from frame"""
-        with torch.no_grad():
-            results = self.yolo_model(frame, conf=self.confidence_threshold, iou=0.5, verbose=False)
-        
-        detections = results[0].boxes
-        valid_detections = []
-        valid_detection_data = []
-        
-        if detections is not None and len(detections) > 0:
-            height, width = frame.shape[:2]
-            
-            for box in detections:
-                xyxy = box.xyxy.cpu().numpy().flatten()
-                confidence = box.conf.cpu().numpy().item()
-                
-                if confidence < self.confidence_threshold:
-                    continue
-                
-                x1, y1, x2, y2 = xyxy[:4]
-                
-                # Clamp coordinates
-                x1, y1, x2, y2 = max(0, x1), max(0, y1), min(width, x2), min(height, y2)
-                
-                if x2 <= x1 or y2 <= y1:
-                    continue
-                
-                # Store detection for tracking (x1, y1, x2, y2 format)
-                valid_detections.append([x1, y1, x2, y2])
-                valid_detection_data.append({
-                    'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2,
-                    'confidence': confidence
-                })
-        
-        return valid_detections, valid_detection_data
-    
-    def _classify_detection(self, frame, x1, y1, x2, y2):
-        """Perform hierarchical classification on a detection crop"""
+    def _classify(self, frame, x1, y1, x2, y2):
+        """Classify a detection crop."""
         crop = frame[int(y1):int(y2), int(x1):int(x2)]
         crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-        pil_img = Image.fromarray(crop_rgb)
-        input_tensor = self.classification_transform(pil_img).unsqueeze(0).to(self.device)
+        tensor = self.transform(Image.fromarray(crop_rgb)).unsqueeze(0).to(self.device)
         
         with torch.no_grad():
-            classification_outputs = self.classification_model(input_tensor)
+            outputs = self.model(tensor)
         
-        return self.process_classification_results(classification_outputs)
+        probs = [torch.softmax(o, dim=1).cpu().numpy().flatten() for o in outputs]
+        idxs = [np.argmax(p) for p in probs]
+        
+        return {
+            "family": self.family_list[idxs[0]] if idxs[0] < len(self.family_list) else f"Family_{idxs[0]}",
+            "genus": self.genus_list[idxs[1]] if idxs[1] < len(self.genus_list) else f"Genus_{idxs[1]}",
+            "species": self.species_list[idxs[2]] if idxs[2] < len(self.species_list) else f"Species_{idxs[2]}",
+            "family_confidence": float(probs[0][idxs[0]]),
+            "genus_confidence": float(probs[1][idxs[1]]),
+            "species_confidence": float(probs[2][idxs[2]]),
+            "family_probs": probs[0].tolist(),
+            "genus_probs": probs[1].tolist(),
+            "species_probs": probs[2].tolist(),
+        }
     
-    def _process_single_detection(self, frame, det_data, track_id, frame_time_seconds):
-        """Process a single detection: classify, store, and visualize"""
-        x1, y1, x2, y2 = det_data['x1'], det_data['y1'], det_data['x2'], det_data['y2']
+    def process_frame(self, frame, frame_time, tracker, frame_number):
+        """
+        Process a single frame: detect and track only (no classification).
+        Classification happens later for confirmed tracks only.
+        
+        Args:
+            frame: BGR image frame
+            frame_time: Time in seconds
+            tracker: InsectTracker instance
+            frame_number: Frame index
+            
+        Returns:
+            tuple: (foreground_mask, list of detections with track_ids)
+        """
+        detections, fg_mask = self._extract_detections(frame)
+        track_ids = tracker.update(detections, frame_number)
+        
         height, width = frame.shape[:2]
+        frame_detections = []
         
-        # Perform classification
-        detection_data = self._classify_detection(frame, x1, y1, x2, y2)
-        
-        # Store detection for aggregation
-        bbox = self.convert_bbox_to_normalized(x1, y1, x2, y2, width, height)
-        timestamp = datetime.now().isoformat()
-        self.store_detection(detection_data, timestamp, frame_time_seconds, track_id, bbox)
-        
-        # Visualization
-        FrameVisualizer.draw_detection_on_frame(frame, x1, y1, x2, y2, track_id, detection_data)
-
-    def process_frame(self, frame, frame_time_seconds, tracker, global_frame_count):
-        """Process a single frame from the video."""
-        self.frame_count += 1
-        
-        # Extract YOLO detections
-        valid_detections, valid_detection_data = self._extract_yolo_detections(frame)
-        
-        # Update tracker with detections
-        track_ids = tracker.update(valid_detections, global_frame_count)
-        
-        # Process each detection with its track ID
-        for i, det_data in enumerate(valid_detection_data):
+        for i, det in enumerate(detections):
+            x1, y1, x2, y2 = det
             track_id = track_ids[i] if i < len(track_ids) else None
-            self._process_single_detection(frame, det_data, track_id, frame_time_seconds)
+            
+            # Track consistency check
+            if track_id:
+                cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+                area = (x2 - x1) * (y2 - y1)
+                
+                if self.track_paths[track_id]:
+                    prev_pos = self.track_paths[track_id][-1]
+                    prev_area = self.track_areas[track_id][-1] if self.track_areas[track_id] else area
+                    
+                    if not check_track_consistency(
+                        prev_pos, (cx, cy), prev_area, area, 
+                        self.params["max_frame_jump"]
+                    ):
+                        # Reset track
+                        self.track_paths[track_id] = []
+                        self.track_areas[track_id] = []
+                
+                self.track_paths[track_id].append((cx, cy))
+                self.track_areas[track_id].append(area)
+            
+            # Store detection WITHOUT classification
+            detection_data = {
+                "timestamp": datetime.now().isoformat(),
+                "frame_number": frame_number,
+                "frame_time_seconds": frame_time,
+                "track_id": track_id,
+                "bbox": [x1, y1, x2, y2],
+                "bbox_normalized": [
+                    (x1 + x2) / (2 * width), (y1 + y2) / (2 * height),
+                    (x2 - x1) / width, (y2 - y1) / height
+                ],
+            }
+            self.all_detections.append(detection_data)
+            frame_detections.append(detection_data)
+            
+            # Log (detection only, no classification yet)
+            track_display = str(track_id)[:8] if track_id else "NEW"
+            print(f"Frame {frame_time:6.2f}s | Track {track_display} | Detected")
         
-        return frame
+        return fg_mask, frame_detections
     
-    # ------------------------------------------------------------------------
-    # AGGREGATION AND RESULTS METHODS
-    # ------------------------------------------------------------------------
-
-    def hierarchical_aggregation(self):
+    def classify_confirmed_tracks(self, video_path, confirmed_track_ids):
         """
-        Perform hierarchical aggregation of results per track ID.
+        Classify only the confirmed tracks by re-reading relevant frames.
         
-        CONFIDENCE CALCULATION EXPLANATION:
-        1. For each track, average the softmax probabilities across all detections
-        2. Use hierarchical selection: 
-           - Find best family (highest averaged family probability)
-           - Find best genus within that family (highest averaged genus probability among genera in that family)
-           - Find best species within that genus (highest averaged species probability among species in that genus)
-        3. Final confidence = averaged probability of the selected class at each taxonomic level
+        Args:
+            video_path: Path to original video
+            confirmed_track_ids: Set of track IDs that passed topology analysis
+            
+        Returns:
+            dict: track_id -> list of classifications
         """
-        print("\n=== Performing Hierarchical Aggregation ===")
+        if not confirmed_track_ids:
+            print("No confirmed tracks to classify.")
+            return {}
         
-        # Group detections by track ID
-        track_detections = defaultdict(list)
-        for detection in self.all_detections:
-            if detection['track_id'] is not None:
-                track_detections[detection['track_id']].append(detection)
+        print(f"\nClassifying {len(confirmed_track_ids)} confirmed tracks...")
         
-        aggregated_results = []
+        # Group detections by frame for confirmed tracks
+        frames_to_classify = defaultdict(list)
+        for det in self.all_detections:
+            if det['track_id'] in confirmed_track_ids:
+                frames_to_classify[det['frame_number']].append(det)
         
-        for track_id, detections in track_detections.items():
-            print(f"\nProcessing Track ID: {track_id} ({len(detections)} detections)")
-            
-            # Aggregate probabilities across all detections for this track
-            prob_sums = [
-                np.zeros(len(self.family_list)),
-                np.zeros(len(self.genus_list)), 
-                np.zeros(len(self.species_list))
-            ]
-            
-            for detection in detections:
-                prob_sums[0] += np.array(detection['family_probs'])
-                prob_sums[1] += np.array(detection['genus_probs'])
-                prob_sums[2] += np.array(detection['species_probs'])
-            
-            # Average the probabilities
-            prob_avgs = [prob_sum / len(detections) for prob_sum in prob_sums]
-            
-            # Hierarchical selection: Start with family
-            best_family_idx = np.argmax(prob_avgs[0])
-            best_family = self.family_list[best_family_idx]
-            best_family_prob = prob_avgs[0][best_family_idx]
-            print(f"  Best family: {best_family} (prob: {best_family_prob:.3f})")
-            
-            # Find genera belonging to this family
-            family_genera_indices = [i for i, genus in enumerate(self.genus_list) 
-                                   if genus in self.genus_to_family and self.genus_to_family[genus] == best_family]
-            
-            if family_genera_indices:
-                family_genus_probs = prob_avgs[1][family_genera_indices]
-                best_genus_idx = family_genera_indices[np.argmax(family_genus_probs)]
-            else:
-                best_genus_idx = np.argmax(prob_avgs[1])
-            
-            best_genus = self.genus_list[best_genus_idx]
-            best_genus_prob = prob_avgs[1][best_genus_idx]
-            print(f"  Best genus: {best_genus} (prob: {best_genus_prob:.3f})")
-            
-            # Find species belonging to this genus
-            genus_species_indices = [i for i, species in enumerate(self.species_list) 
-                                   if species in self.species_to_genus and self.species_to_genus[species] == best_genus]
-            
-            if genus_species_indices:
-                genus_species_probs = prob_avgs[2][genus_species_indices]
-                best_species_idx = genus_species_indices[np.argmax(genus_species_probs)]
-            else:
-                best_species_idx = np.argmax(prob_avgs[2])
-            
-            best_species = self.species_list[best_species_idx]
-            best_species_prob = prob_avgs[2][best_species_idx]
-            print(f"  Best species: {best_species} (prob: {best_species_prob:.3f})")
-            
-            # Calculate track statistics
-            frame_times = [d['frame_time_seconds'] for d in detections]
-            first_frame, last_frame = min(frame_times), max(frame_times)
-            
-            aggregated_results.append({
-                'track_id': track_id,
-                'num_detections': len(detections),
-                'first_frame_time': first_frame,
-                'last_frame_time': last_frame,
-                'duration': last_frame - first_frame,
-                'final_family': best_family,
-                'final_genus': best_genus,
-                'final_species': best_species,
-                'family_confidence': best_family_prob,
-                'genus_confidence': best_genus_prob,
-                'species_confidence': best_species_prob
-            })
+        if not frames_to_classify:
+            return {}
         
-        return aggregated_results
-    
-    def print_simplified_summary(self, aggregated_results):
-        """Print a simplified, readable summary of tracking results"""
-        print("\n" + "="*60)
-        print("🐛 INSECT TRACKING SUMMARY")
-        print("="*60)
+        cap = cv2.VideoCapture(video_path)
+        track_classifications = defaultdict(list)
         
-        if not aggregated_results:
-            print("No insects were tracked in this video.")
-            return
+        frame_numbers = sorted(frames_to_classify.keys())
+        current_frame = 0
+        classified_count = 0
         
-        # Sort by number of detections (most active insects first)
-        sorted_results = sorted(aggregated_results, key=lambda x: x['num_detections'], reverse=True)
-        
-        for i, result in enumerate(sorted_results, 1):
-            duration = result['duration']
-            detection_count = result['num_detections']
+        for target_frame in frame_numbers:
+            # Seek to frame
+            while current_frame < target_frame:
+                cap.read()
+                current_frame += 1
             
-            print(f"\n🐞 Insect {i}:")
-            print(f"   Detections: {detection_count}")
-            print(f"   Duration: {duration:.1f}s")
-            print(f"   Family: {result['final_family']}")
-            print(f"   Genus: {result['final_genus']}")
-            print(f"   Species: {result['final_species']}")
-            print(f"   Confidence: {result['species_confidence']:.1%}")
-        
-        print(f"\n📈 Total: {len(aggregated_results)} unique insects tracked")
-        print("="*60)
-    
-    def save_results_table(self, aggregated_results, output_path):
-        """Save aggregated results to CSV"""
-        df = pd.DataFrame(aggregated_results).sort_values('track_id')
-        csv_path = str(output_path).replace('.mp4', '_results.csv')
-        df.to_csv(csv_path, index=False)
-        
-        print(f"\n📊 Results saved to: {csv_path}")
-        
-        # Print simplified summary
-        self.print_simplified_summary(aggregated_results)
-        
-        return df
-
-# ============================================================================
-# VIDEO PROCESSING FUNCTIONS
-# ============================================================================
-
-def process_video(video_path, processor, output_video_path=None, show_video=False, tracker_max_frames=30, fps=None):
-    """Process an MP4 video file frame by frame.
-    
-    Args:
-        fps (float, optional): FPS for processing and output. If provided, frames will be skipped 
-                              to match this rate and output video will use this FPS. If None, all frames are processed.
-    """
-    
-    if not os.path.exists(video_path):
-        raise FileNotFoundError(f"Video file not found: {video_path}")
-    
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise ValueError(f"Could not open video file: {video_path}")
-    
-    # Get video properties
-    input_fps = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    width, height = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    duration = total_frames / input_fps if input_fps > 0 else 0
-    
-    print(f"Processing video: {video_path}")
-    print(f"Properties: {total_frames} frames, {input_fps:.2f} FPS, {duration:.2f}s duration")
-    
-    # Initialize tracker and output writer
-    tracker = InsectTracker(height, width, max_frames=tracker_max_frames, debug=False)
-    out = None
-    
-    if output_video_path:
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        write_fps = fps if fps is not None else input_fps
-        out = cv2.VideoWriter(output_video_path, fourcc, write_fps, (width, height))
-        print(f"Output video: {output_video_path} at {write_fps:.2f} FPS")
-    
-    frame_number = 0
-    processed_frame_count = 0
-    start_time = time.time()
-    
-    # Calculate frame skip interval if fps is specified
-    frame_skip_interval = None
-    if fps is not None and fps > 0 and input_fps > 0:
-        frame_skip_interval = max(1, int(input_fps / fps))
-        print(f"Processing every {frame_skip_interval} frame(s) to achieve ~{fps:.2f} FPS")
-        print(f"Tracker will only receive the processed frames, not all {total_frames} frames")
-    
-    try:
-        while True:
             ret, frame = cap.read()
             if not ret:
                 break
+            current_frame += 1
             
-            frame_time_seconds = frame_number / input_fps if input_fps > 0 else 0
-            
-            # Check if we should process this frame
-            should_process = True
-            if frame_skip_interval is not None:
-                should_process = (frame_number % frame_skip_interval == 0)
-            
-            if should_process:
-                # Process the frame
-                processed_frame = processor.process_frame(frame, frame_time_seconds, tracker, frame_number)
-                processed_frame_count += 1
-                last_processed_frame = processed_frame.copy()  # Keep for frame duplication
+            # Classify each detection in this frame
+            for det in frames_to_classify[target_frame]:
+                x1, y1, x2, y2 = det['bbox']
+                classification = self._classify(frame, x1, y1, x2, y2)
                 
-                # Show video if requested
-                if show_video:
-                    cv2.imshow('Video Inference', processed_frame)
-                    if cv2.waitKey(1) & 0xFF == ord('q'):
-                        print("User requested quit")
-                        break
+                # Update detection with classification
+                det.update(classification)
                 
-                # If we're skipping frames, skip ahead to save time
-                if frame_skip_interval is not None and frame_skip_interval > 1:
-                    # Skip the next (frame_skip_interval - 1) frames
-                    for _ in range(frame_skip_interval - 1):
-                        ret, _ = cap.read()
-                        if not ret:
-                            break
-                        frame_number += 1
-            else:
-                # Use the last processed frame to maintain video length
-                if 'last_processed_frame' in locals():
-                    processed_frame = last_processed_frame.copy()
-                else:
-                    processed_frame = frame  # Fallback for first frames
-            
-            # Write to output video if requested (always write to maintain duration)
-            if out:
-                out.write(processed_frame)
-            
-            frame_number += 1
-            
-            # Progress update based on processed frames only
-            if should_process and processed_frame_count % 25 == 0:
-                if frame_skip_interval is not None:
-                    estimated_total_processed = total_frames // frame_skip_interval
-                    progress = (processed_frame_count / estimated_total_processed) * 100 if estimated_total_processed > 0 else 0
-                    print(f"Processed: {processed_frame_count}/{estimated_total_processed} frames ({progress:.1f}%)")
-                else:
-                    progress = (frame_number / total_frames) * 100 if total_frames > 0 else 0
-                    print(f"Processed: {processed_frame_count}/{total_frames} frames ({progress:.1f}%)")
-    
-    finally:
+                track_classifications[det['track_id']].append(classification)
+                classified_count += 1
+                
+                if classified_count % 20 == 0:
+                    print(f"  Classified {classified_count} detections...", end='\r')
+        
         cap.release()
-        if out:
-            out.release()
-        if show_video:
-            cv2.destroyAllWindows()
+        print(f"\n✓ Classified {classified_count} detections from {len(confirmed_track_ids)} tracks")
+        
+        return track_classifications
     
-    processing_time = time.time() - start_time
-    print(f"\nProcessing complete! {processed_frame_count}/{frame_number} frames processed in {processing_time:.2f}s")
-    if processed_frame_count > 0:
-        print(f"Processing speed: {processed_frame_count/processing_time:.2f} FPS, Detections: {len(processor.all_detections)}")
-    else:
-        print(f"No frames processed, Detections: {len(processor.all_detections)}")
+    def analyze_tracks(self):
+        """
+        Analyze all tracks to determine which pass topology (before classification).
+        
+        Returns:
+            tuple: (confirmed_track_ids set, all_track_info dict)
+        """
+        print("\n" + "="*60)
+        print("TRACK TOPOLOGY ANALYSIS")
+        print("="*60)
+        
+        track_detections = defaultdict(list)
+        for det in self.all_detections:
+            if det['track_id']:
+                track_detections[det['track_id']].append(det)
+        
+        confirmed_track_ids = set()
+        all_track_info = {}
+        
+        for track_id, detections in track_detections.items():
+            # Path topology analysis
+            path = self.track_paths.get(track_id, [])
+            passes_topology, topology_metrics = analyze_path_topology(path, self.params)
+            
+            frame_times = [d['frame_time_seconds'] for d in detections]
+            
+            track_info = {
+                'track_id': track_id,
+                'num_detections': len(detections),
+                'first_frame_time': min(frame_times),
+                'last_frame_time': max(frame_times),
+                'duration': max(frame_times) - min(frame_times),
+                'passes_topology': passes_topology,
+                **topology_metrics
+            }
+            all_track_info[track_id] = track_info
+            
+            status = "✓ CONFIRMED" if passes_topology else "? unconfirmed"
+            print(f"Track {str(track_id)[:8]}: {len(detections)} detections, "
+                  f"{track_info['duration']:.1f}s - {status}")
+            
+            if passes_topology:
+                confirmed_track_ids.add(track_id)
+        
+        print(f"\n✓ {len(confirmed_track_ids)} confirmed / {len(track_detections)} total tracks")
+        return confirmed_track_ids, all_track_info
     
-    # Perform hierarchical aggregation and save results
-    aggregated_results = processor.hierarchical_aggregation()
-    if output_video_path:
-        processor.save_results_table(aggregated_results, output_video_path)
+    def hierarchical_aggregation(self, confirmed_track_ids):
+        """
+        Aggregate predictions for confirmed tracks using hierarchical selection.
+        Must be called AFTER classify_confirmed_tracks().
+        
+        Args:
+            confirmed_track_ids: Set of confirmed track IDs
+            
+        Returns:
+            list: Aggregated results for confirmed tracks only
+        """
+        print("\n" + "="*60)
+        print("HIERARCHICAL AGGREGATION (Confirmed Tracks)")
+        print("="*60)
+        
+        track_detections = defaultdict(list)
+        for det in self.all_detections:
+            if det['track_id'] in confirmed_track_ids:
+                track_detections[det['track_id']].append(det)
+        
+        results = []
+        for track_id, detections in track_detections.items():
+            # Check if classifications exist
+            if 'family_probs' not in detections[0]:
+                print(f"Warning: Track {str(track_id)[:8]} has no classifications, skipping")
+                continue
+            
+            print(f"\nTrack {str(track_id)[:8]}: {len(detections)} classified detections")
+            
+            # Path topology analysis
+            path = self.track_paths.get(track_id, [])
+            passes_topology, topology_metrics = analyze_path_topology(path, self.params)
+            
+            # Average probabilities
+            prob_avgs = [
+                np.mean([d['family_probs'] for d in detections], axis=0),
+                np.mean([d['genus_probs'] for d in detections], axis=0),
+                np.mean([d['species_probs'] for d in detections], axis=0),
+            ]
+            
+            # Hierarchical selection
+            best_family_idx = np.argmax(prob_avgs[0])
+            best_family = self.family_list[best_family_idx]
+            
+            family_genera = [i for i, g in enumerate(self.genus_list) 
+                           if self.genus_to_family.get(g) == best_family]
+            if family_genera:
+                best_genus_idx = family_genera[np.argmax(prob_avgs[1][family_genera])]
+            else:
+                best_genus_idx = np.argmax(prob_avgs[1])
+            best_genus = self.genus_list[best_genus_idx]
+            
+            genus_species = [i for i, s in enumerate(self.species_list)
+                           if self.species_to_genus.get(s) == best_genus]
+            if genus_species:
+                best_species_idx = genus_species[np.argmax(prob_avgs[2][genus_species])]
+            else:
+                best_species_idx = np.argmax(prob_avgs[2])
+            best_species = self.species_list[best_species_idx]
+            
+            frame_times = [d['frame_time_seconds'] for d in detections]
+            
+            result = {
+                'track_id': track_id,
+                'num_detections': len(detections),
+                'first_frame_time': min(frame_times),
+                'last_frame_time': max(frame_times),
+                'duration': max(frame_times) - min(frame_times),
+                'final_family': best_family,
+                'final_genus': best_genus,
+                'final_species': best_species,
+                'family_confidence': float(prob_avgs[0][best_family_idx]),
+                'genus_confidence': float(prob_avgs[1][best_genus_idx]),
+                'species_confidence': float(prob_avgs[2][best_species_idx]),
+                'passes_topology': passes_topology,
+                **topology_metrics
+            }
+            results.append(result)
+            
+            print(f"  → {best_family} / {best_genus} / {best_species} "
+                  f"({result['species_confidence']:.1%})")
+        
+        return results
     
-    return aggregated_results
+    def save_results(self, results, output_paths):
+        """
+        Save results to CSV and print summary.
+        
+        Args:
+            results: Aggregated results list (confirmed tracks only)
+            output_paths: Dict with output file paths
+            
+        Returns:
+            pd.DataFrame: Results dataframe (confirmed tracks only)
+        """
+        # Count total tracks vs confirmed
+        total_tracks = len(self.track_paths)
+        num_confirmed = len(results)
+        num_unconfirmed = total_tracks - num_confirmed
+        
+        # Save confirmed tracks to results CSV
+        if results:
+            df = pd.DataFrame(results).sort_values('num_detections', ascending=False)
+            df.to_csv(output_paths["results_csv"], index=False)
+            print(f"\n📊 Confirmed results saved: {output_paths['results_csv']} ({num_confirmed} tracks)")
+        else:
+            # Create empty CSV with headers
+            df = pd.DataFrame(columns=[
+                'track_id', 'num_detections', 'first_frame_time', 'last_frame_time',
+                'duration', 'final_family', 'final_genus', 'final_species',
+                'family_confidence', 'genus_confidence', 'species_confidence',
+                'passes_topology', 'total_displacement', 'revisit_ratio',
+                'progression_ratio', 'directional_variance'
+            ])
+            df.to_csv(output_paths["results_csv"], index=False)
+            print(f"\n📊 Results file created (empty - no confirmed tracks): {output_paths['results_csv']}")
+        
+        # Save all detections (frame-by-frame, regardless of confirmation)
+        det_df = pd.DataFrame(self.all_detections)
+        det_df.to_csv(output_paths["detections_csv"], index=False)
+        print(f"📋 Frame-by-frame detections saved: {output_paths['detections_csv']}")
+        
+        # Print summary
+        print("\n" + "="*60)
+        print("🐛 FINAL SUMMARY")
+        print("="*60)
+        
+        if results:
+            print(f"\n✓ CONFIRMED INSECTS ({num_confirmed}):")
+            for r in results:
+                print(f"  • {r['final_species']} - {r['num_detections']} detections, "
+                      f"{r['duration']:.1f}s, {r['species_confidence']:.1%}")
+        
+        if num_unconfirmed > 0:
+            print(f"\n? Unconfirmed tracks: {num_unconfirmed} (failed topology analysis)")
+        
+        print(f"\n📈 Total: {total_tracks} tracks ({num_confirmed} confirmed, {num_unconfirmed} unconfirmed)")
+        
+        # Bold warning if no confirmed tracks
+        if not results:
+            print("\n" + "!"*60)
+            print("⚠️  WARNING: NO CONFIRMED INSECT TRACKS DETECTED!")
+            print("!"*60)
+            print("Possible reasons:")
+            print("  • No insects present in the video")
+            print("  • Detection parameters too strict (try lowering min_area)")
+            print("  • Tracking parameters too strict (try increasing lost_track_seconds)")
+            print("  • Path topology too strict (try lowering min_displacement)")
+            print("  • Video quality/resolution issues")
+            if num_unconfirmed > 0:
+                print(f"\nNote: {num_unconfirmed} tracks were detected but failed topology check.")
+                print("Consider relaxing path topology parameters if these might be valid insects.")
+            print("!"*60)
+        
+        print("="*60)
+        
+        return df
+
 
 # ============================================================================
-# MAIN ENTRY POINT FUNCTIONS
+# VIDEO PROCESSING
 # ============================================================================
 
-def inference(species_list, yolo_model_path, hierarchical_model_path, confidence_threshold, 
-                  video_path, output_path, tracker_max_frames, fps=None):
+def process_video(video_path, processor, output_paths, show_video=False, fps=None):
     """
-    Run inference on a single video file.
+    Process video file with efficient classification (confirmed tracks only).
+    
+    Pipeline:
+        1. Detection & Tracking: Process all frames, detect motion, build tracks
+        2. Topology Analysis: Determine which tracks are confirmed insects
+        3. Classification: Classify ONLY confirmed tracks (saves compute)
+        4. Render Videos: Debug (all detections) + Annotated (confirmed with classifications)
     
     Args:
-        species_list (list): List of species names for classification
-        yolo_model_path (str): Path to YOLO model weights
-        hierarchical_model_path (str): Path to hierarchical classification model weights
-        confidence_threshold (float): Confidence threshold for detections
-        video_path (str): Path to input video file
-        output_path (str): Path for output video file (including filename)
-        tracker_max_frames (int): Maximum frames for tracker context
-        fps (float, optional): Processing and output FPS. If provided, frames will be skipped 
-                              to match this rate and output video will use this FPS. If None, all frames are processed.
-    
+        video_path: Input video path
+        processor: VideoInferenceProcessor instance
+        output_paths: Dict with output file paths
+        show_video: Display video while processing
+        fps: Target FPS (skip frames if lower than input)
+        
     Returns:
-        dict: Summary of processing results
+        list: Aggregated results
     """
-    # Check if input video exists
     if not os.path.exists(video_path):
-        error_msg = f"Video file not found: {video_path}"
-        print(f"Error: {error_msg}")
-        return {"error": error_msg}
-
-    # Create output directory if it doesn't exist
-    output_dir = os.path.dirname(output_path)
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-
-    print(f"Processing single video: {video_path}")
-
-    # Create processor instance
-    print("Initializing models...")
-    processor = VideoInferenceProcessor(
-        species_list=species_list,
-        yolo_model_path=yolo_model_path,
-        hierarchical_model_path=hierarchical_model_path,
-        confidence_threshold=confidence_threshold
+        raise FileNotFoundError(f"Video not found: {video_path}")
+    
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Could not open: {video_path}")
+    
+    input_fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    print(f"\nVideo: {video_path}")
+    print(f"Properties: {total_frames} frames, {input_fps:.1f} FPS, {total_frames/input_fps:.1f}s")
+    
+    # Setup tracker
+    effective_fps = fps if fps and fps > 0 else input_fps if input_fps > 0 else 30
+    track_memory = max(30, int(processor.params["lost_track_seconds"] * effective_fps))
+    
+    tracker = InsectTracker(
+        image_height=height, image_width=width,
+        max_frames=track_memory, track_memory_frames=track_memory,
+        w_dist=0.6, w_area=0.4, cost_threshold=0.3, debug=False
     )
     
-    # Track processing results
-    processing_results = {
-        "video_file": os.path.basename(video_path),
-        "output_path": output_path,
-        "success": False,
-        "detections": 0,
-        "tracks": 0,
-        "error": None
-    }
+    # Frame skip
+    skip_interval = max(1, int(input_fps / fps)) if fps and fps > 0 else 1
+    if skip_interval > 1:
+        print(f"Processing every {skip_interval} frame(s)")
     
-    print(f"\n{'='*20}\nProcessing: {video_path}\n{'='*20}")
-
-    try:
-        # Process the video
-        aggregated_results = process_video(
-            video_path=video_path,
-            processor=processor,
-            output_video_path=output_path,
-            show_video=False,
-            tracker_max_frames=tracker_max_frames,
-            fps=fps
-        )
+    # ==========================================================================
+    # PHASE 1: Detection & Tracking (no classification)
+    # ==========================================================================
+    print("\n" + "="*60)
+    print("PHASE 1: DETECTION & TRACKING")
+    print("="*60)
+    
+    frame_num = 0
+    processed = 0
+    start = time.time()
+    
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
         
-        processing_results.update({
-            "success": True,
-            "detections": len(processor.all_detections),
-            "tracks": len(aggregated_results)
-        })
+        frame_time = frame_num / input_fps if input_fps > 0 else 0
         
-        print(f"Finished processing. Output saved to {output_path}")
+        if frame_num % skip_interval == 0:
+            fg_mask, frame_dets = processor.process_frame(frame, frame_time, tracker, frame_num)
+            processed += 1
+            
+            if processed % 50 == 0:
+                print(f"  Progress: {processed} frames, {len(processor.all_detections)} detections", end='\r')
         
-    except Exception as e:
-        error_msg = f"Failed to process {os.path.basename(video_path)}: {str(e)}"
-        print(f"Error: {error_msg}")
-        processing_results["error"] = error_msg
+        frame_num += 1
     
-    if processing_results["success"]:
-        print(f"\nProcessing complete!")
-        print(f"Total detections: {processing_results['detections']}")
-        print(f"Total tracks: {processing_results['tracks']}")
+    cap.release()
+    elapsed = time.time() - start
+    print(f"\n✓ Phase 1 complete: {processed} frames in {elapsed:.1f}s ({processed/elapsed:.1f} FPS)")
+    print(f"  Total detections: {len(processor.all_detections)}")
+    print(f"  Unique tracks: {len(processor.track_paths)}")
     
-    return processing_results
-
-
-def main():
-    """Example usage for processing a single video."""
-    # Define your species list (replace with your actual species)
-    species_list = [
-        "Coccinella septempunctata", "Apis mellifera", "Bombus lapidarius", "Bombus terrestris",
-        "Eupeodes corollae", "Episyrphus balteatus", "Aglais urticae", "Vespula vulgaris",
-        "Eristalis tenax", "unknown"
-    ]
+    # ==========================================================================
+    # PHASE 2: Topology Analysis (determine confirmed tracks)
+    # ==========================================================================
+    confirmed_track_ids, all_track_info = processor.analyze_tracks()
     
-    # Paths (replace with your actual paths)
-    video_path = "input_videos/sample_video.mp4"
-    output_path = "output_videos/sample_video_predictions.mp4"
-    yolo_model_path = "weights/yolo_model.pt"
-    hierarchical_model_path = "weights/hierarchical_model.pth"
+    # ==========================================================================
+    # PHASE 3: Classification (confirmed tracks only)
+    # ==========================================================================
+    print("\n" + "="*60)
+    print("PHASE 3: CLASSIFICATION (Confirmed Tracks Only)")
+    print("="*60)
     
-    # Run inference
-    results = inference(
-        species_list=species_list,
-        yolo_model_path=yolo_model_path,
-        hierarchical_model_path=hierarchical_model_path,
-        confidence_threshold=0.35,
-        video_path=video_path,
-        output_path=output_path,
-        tracker_max_frames=60,
-        fps=None  # Set to e.g. 5.0 to process only 5 frames per second
+    if confirmed_track_ids:
+        processor.classify_confirmed_tracks(video_path, confirmed_track_ids)
+        results = processor.hierarchical_aggregation(confirmed_track_ids)
+    else:
+        results = []
+    
+    # ==========================================================================
+    # PHASE 4: Render Videos
+    # ==========================================================================
+    print("\n" + "="*60)
+    print("PHASE 4: RENDERING VIDEOS")
+    print("="*60)
+    
+    # Render debug video (all detections, showing confirmed vs unconfirmed)
+    print(f"\nRendering debug video (all detections)...")
+    _render_debug_video(
+        video_path, output_paths["debug_video"],
+        processor, confirmed_track_ids, all_track_info, input_fps
     )
+    
+    # Render annotated video (confirmed tracks with classifications)
+    print(f"\nRendering annotated video ({len(confirmed_track_ids)} confirmed tracks)...")
+    _render_annotated_video(
+        video_path, output_paths["annotated_video"],
+        processor, confirmed_track_ids, input_fps
+    )
+    
+    # Save results
+    processor.save_results(results, output_paths)
     
     return results
 
 
+def _render_debug_video(video_path, output_path, processor, confirmed_track_ids, all_track_info, fps):
+    """
+    Render debug video showing all detections with confirmed/unconfirmed status.
+    Shows detection boxes, track IDs, and GMM motion mask side-by-side.
+    """
+    cap = cv2.VideoCapture(video_path)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    # Recreate background subtractor for GMM visualization
+    back_sub = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16, detectShadows=False)
+    
+    out = cv2.VideoWriter(
+        output_path,
+        cv2.VideoWriter_fourcc(*'mp4v'),
+        fps, (width * 2, height)
+    )
+    
+    # Build frame-to-detections lookup
+    frame_detections = defaultdict(list)
+    for det in processor.all_detections:
+        frame_detections[det['frame_number']].append(det)
+    
+    frame_num = 0
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        
+        # Get GMM mask
+        fg_mask = back_sub.apply(frame)
+        fg_display = cv2.cvtColor(fg_mask, cv2.COLOR_GRAY2BGR)
+        
+        # Draw all detections with status
+        for det in frame_detections[frame_num]:
+            x1, y1, x2, y2 = [int(v) for v in det['bbox']]
+            track_id = det['track_id']
+            
+            if track_id in confirmed_track_ids:
+                # Confirmed: Green box, show classification if available
+                color = (0, 255, 0)
+                status = "CONFIRMED"
+                classification = {
+                    'species': det.get('species', ''),
+                    'species_confidence': det.get('species_confidence', 0),
+                }
+                label = f"{str(track_id)[:6]} ✓"
+                if classification['species']:
+                    label += f" {classification['species'][:12]}"
+            else:
+                # Unconfirmed: Yellow box
+                color = (0, 255, 255)
+                status = "tracking..."
+                label = f"{str(track_id)[:6] if track_id else 'NEW'}"
+            
+            # Draw box
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            
+            # Draw label background
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+            cv2.rectangle(frame, (x1, y1 - th - 4), (x1 + tw + 4, y1), color, -1)
+            cv2.putText(frame, label, (x1 + 2, y1 - 2), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
+            
+            # Draw on GMM mask too
+            cv2.rectangle(fg_display, (x1, y1), (x2, y2), color, 2)
+        
+        # Add headers
+        cv2.putText(frame, f"Frame {frame_num} | Detections (Green=Confirmed, Yellow=Tracking)", 
+                   (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.putText(fg_display, "GMM Motion Mask", 
+                   (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        
+        # Combine side-by-side
+        combined = np.hstack((frame, fg_display))
+        out.write(combined)
+        
+        frame_num += 1
+        if frame_num % 100 == 0:
+            print(f"  Debug: {frame_num} frames", end='\r')
+    
+    cap.release()
+    out.release()
+    print(f"\n✓ Debug video saved: {output_path}")
+
+
+def _render_annotated_video(video_path, output_path, processor, confirmed_track_ids, fps):
+    """
+    Render annotated video showing only confirmed tracks with classifications.
+    """
+    if not confirmed_track_ids:
+        # Create video with "No confirmed tracks" message
+        cap = cv2.VideoCapture(video_path)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
+        
+        frame_num = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            cv2.putText(frame, "No confirmed insect tracks", 
+                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            out.write(frame)
+            frame_num += 1
+        
+        cap.release()
+        out.release()
+        print(f"✓ Annotated video saved (no confirmed tracks): {output_path}")
+        return
+    
+    cap = cv2.VideoCapture(video_path)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
+    
+    # Build frame-to-detections lookup for confirmed tracks only
+    frame_detections = defaultdict(list)
+    for det in processor.all_detections:
+        if det['track_id'] in confirmed_track_ids:
+            frame_detections[det['frame_number']].append(det)
+    
+    frame_num = 0
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        
+        # Draw paths for confirmed tracks (up to current frame)
+        for track_id in confirmed_track_ids:
+            path_to_draw = []
+            for det in processor.all_detections:
+                if det['track_id'] == track_id and det['frame_number'] <= frame_num:
+                    bbox = det['bbox']
+                    cx = (bbox[0] + bbox[2]) / 2
+                    cy = (bbox[1] + bbox[3]) / 2
+                    path_to_draw.append((cx, cy))
+            
+            if len(path_to_draw) > 1:
+                FrameVisualizer.draw_path(frame, path_to_draw, track_id)
+        
+        # Draw detections for this frame (confirmed tracks only, with classification)
+        for det in frame_detections[frame_num]:
+            x1, y1, x2, y2 = det['bbox']
+            track_id = det['track_id']
+            
+            classification = {
+                'family': det.get('family', ''),
+                'genus': det.get('genus', ''),
+                'species': det.get('species', ''),
+                'family_confidence': det.get('family_confidence', 0),
+                'genus_confidence': det.get('genus_confidence', 0),
+                'species_confidence': det.get('species_confidence', 0),
+            }
+            FrameVisualizer.draw_detection(frame, x1, y1, x2, y2, track_id, classification)
+        
+        # Add header
+        cv2.putText(frame, f"Confirmed Insects ({len(confirmed_track_ids)} tracks)", 
+                   (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        
+        out.write(frame)
+        frame_num += 1
+        
+        if frame_num % 100 == 0:
+            print(f"  Annotated: {frame_num} frames", end='\r')
+    
+    cap.release()
+    out.release()
+    print(f"\n✓ Annotated video saved: {output_path}")
+
+
+# ============================================================================
+# MAIN ENTRY POINT
+# ============================================================================
+
+def inference(
+    species_list,
+    hierarchical_model_path,
+    video_path,
+    output_dir,
+    fps=None,
+    config=None,
+    backbone="resnet50",
+):
+    """
+    Run inference on a video file.
+    
+    Args:
+        species_list: List of species names for classification
+        hierarchical_model_path: Path to trained model weights
+        video_path: Input video path
+        output_dir: Output directory for all generated files
+        fps: Target processing FPS (None = use input FPS)
+        config: Detection config - can be:
+            - None: use defaults
+            - str: path to YAML/JSON config file
+            - dict: config parameters directly
+        backbone: ResNet backbone ('resnet18', 'resnet50', 'resnet101').
+                  If model checkpoint contains backbone info, it will be used instead.
+    
+    Returns:
+        dict: Processing results with output file paths
+        
+    Generated files in output_dir:
+        - {video_name}_annotated.mp4: Video with detection boxes and paths
+        - {video_name}_debug.mp4: Side-by-side with GMM motion mask
+        - {video_name}_results.csv: Aggregated track results
+        - {video_name}_detections.csv: Frame-by-frame detections
+    """
+    if not os.path.exists(video_path):
+        print(f"Error: Video not found: {video_path}")
+        return {"error": f"Video not found: {video_path}", "success": False}
+    
+    # Build parameters from config
+    if config is None:
+        params = get_default_config()
+    elif isinstance(config, str):
+        params = load_config(config)
+    elif isinstance(config, dict):
+        params = get_default_config()
+        for key, value in config.items():
+            if key in params:
+                params[key] = value
+            else:
+                logger.warning(f"Unknown config parameter: {key}")
+    else:
+        raise ValueError("config must be None, a file path (str), or a dict")
+    
+    # Setup output directory and file paths
+    os.makedirs(output_dir, exist_ok=True)
+    video_name = os.path.splitext(os.path.basename(video_path))[0]
+    
+    output_paths = {
+        "annotated_video": os.path.join(output_dir, f"{video_name}_annotated.mp4"),
+        "debug_video": os.path.join(output_dir, f"{video_name}_debug.mp4"),
+        "results_csv": os.path.join(output_dir, f"{video_name}_results.csv"),
+        "detections_csv": os.path.join(output_dir, f"{video_name}_detections.csv"),
+    }
+    
+    print("\n" + "="*60)
+    print("BPLUSPLUS INFERENCE")
+    print("="*60)
+    print(f"Video: {video_path}")
+    print(f"Model: {hierarchical_model_path}")
+    print(f"Output directory: {output_dir}")
+    print("\nOutput files:")
+    for name, path in output_paths.items():
+        print(f"  {name}: {os.path.basename(path)}")
+    print("\nDetection Parameters:")
+    for key, value in params.items():
+        print(f"  {key}: {value}")
+    print("="*60)
+    
+    # Process
+    processor = VideoInferenceProcessor(
+        species_list=species_list,
+        hierarchical_model_path=hierarchical_model_path,
+        params=params,
+        backbone=backbone,
+    )
+    
+    try:
+        results = process_video(
+            video_path=video_path,
+            processor=processor,
+            output_paths=output_paths,
+            fps=fps
+        )
+        
+        return {
+            "video_file": os.path.basename(video_path),
+            "output_dir": output_dir,
+            "output_files": output_paths,
+            "success": True,
+            "detections": len(processor.all_detections),
+            "tracks": len(results),
+            "confirmed_tracks": len([r for r in results if r.get('passes_topology', False)]),
+        }
+    except Exception as e:
+        logger.exception("Inference failed")
+        return {"error": str(e), "success": False}
+
+
+# ============================================================================
+# COMMAND LINE INTERFACE
+# ============================================================================
+
+def main():
+    """Command line interface for inference."""
+    parser = argparse.ArgumentParser(
+        description='Bplusplus Video Inference - Detect and classify insects in videos',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Basic usage
+  python -m bplusplus.inference --video input.mp4 --model model.pt \\
+      --output-dir results/ --species "Apis mellifera" "Bombus terrestris"
+  
+  # With config file
+  python -m bplusplus.inference --video input.mp4 --model model.pt \\
+      --output-dir results/ --species "Apis mellifera" --config detection_config.yaml
+
+Output files generated in output directory:
+  - {video_name}_annotated.mp4: Video with detection boxes and paths
+  - {video_name}_debug.mp4: Side-by-side view with GMM motion mask  
+  - {video_name}_results.csv: Aggregated track results
+  - {video_name}_detections.csv: Frame-by-frame detections
+        """
+    )
+    
+    # Required arguments
+    parser.add_argument('--video', '-v', help='Input video path')
+    parser.add_argument('--model', '-m', help='Path to hierarchical model weights')
+    parser.add_argument('--output-dir', '-o', help='Output directory for all generated files')
+    parser.add_argument('--species', '-s', nargs='+', help='List of species names')
+    
+    # Config
+    parser.add_argument('--config', '-c', help='Path to config file (YAML or JSON)')
+    
+    # Processing
+    parser.add_argument('--fps', type=float, help='Target processing FPS')
+    parser.add_argument('--show', action='store_true', help='Display video while processing')
+    parser.add_argument('--backbone', '-b', default='resnet50',
+                       choices=['resnet18', 'resnet50', 'resnet101'],
+                       help='ResNet backbone (default: resnet50, overridden by checkpoint if saved)')
+    
+    # Detection parameters (override config)
+    defaults = DEFAULT_DETECTION_CONFIG
+    
+    cohesive = parser.add_argument_group('Cohesiveness parameters')
+    cohesive.add_argument('--min-blob-ratio', type=float, 
+                         help=f'Min largest blob ratio (default: {defaults["min_largest_blob_ratio"]})')
+    cohesive.add_argument('--max-num-blobs', type=int,
+                         help=f'Max number of blobs (default: {defaults["max_num_blobs"]})')
+    
+    shape = parser.add_argument_group('Shape parameters')
+    shape.add_argument('--min-area', type=int,
+                      help=f'Min area in px² (default: {defaults["min_area"]})')
+    shape.add_argument('--max-area', type=int,
+                      help=f'Max area in px² (default: {defaults["max_area"]})')
+    shape.add_argument('--min-density', type=float,
+                      help=f'Min density (default: {defaults["min_density"]})')
+    shape.add_argument('--min-solidity', type=float,
+                      help=f'Min solidity (default: {defaults["min_solidity"]})')
+    
+    tracking = parser.add_argument_group('Tracking parameters')
+    tracking.add_argument('--min-displacement', type=int,
+                         help=f'Min NET displacement in px (default: {defaults["min_displacement"]})')
+    tracking.add_argument('--min-path-points', type=int,
+                         help=f'Min path points (default: {defaults["min_path_points"]})')
+    tracking.add_argument('--max-frame-jump', type=int,
+                         help=f'Max pixels between frames (default: {defaults["max_frame_jump"]})')
+    tracking.add_argument('--lost-track-seconds', type=float,
+                         help=f'Lost track memory in seconds (default: {defaults["lost_track_seconds"]})')
+    
+    topology = parser.add_argument_group('Path topology parameters')
+    topology.add_argument('--max-revisit-ratio', type=float,
+                         help=f'Max revisit ratio (default: {defaults["max_revisit_ratio"]})')
+    topology.add_argument('--min-progression-ratio', type=float,
+                         help=f'Min progression ratio (default: {defaults["min_progression_ratio"]})')
+    topology.add_argument('--max-directional-variance', type=float,
+                         help=f'Max directional variance (default: {defaults["max_directional_variance"]})')
+    
+    args = parser.parse_args()
+    
+    # Validate required args
+    if not all([args.video, args.model, args.output_dir, args.species]):
+        parser.error("--video, --model, --output-dir, and --species are required")
+    
+    # Build config: start with file if provided, then override with CLI args
+    if args.config:
+        config = args.config  # Pass path, inference() will load it
+    else:
+        # Build dict from CLI args (only non-None values)
+        cli_overrides = {
+            "min_largest_blob_ratio": args.min_blob_ratio,
+            "max_num_blobs": args.max_num_blobs,
+            "min_area": args.min_area,
+            "max_area": args.max_area,
+            "min_density": args.min_density,
+            "min_solidity": args.min_solidity,
+            "min_displacement": args.min_displacement,
+            "min_path_points": args.min_path_points,
+            "max_frame_jump": args.max_frame_jump,
+            "lost_track_seconds": args.lost_track_seconds,
+            "max_revisit_ratio": args.max_revisit_ratio,
+            "min_progression_ratio": args.min_progression_ratio,
+            "max_directional_variance": args.max_directional_variance,
+        }
+        config = {k: v for k, v in cli_overrides.items() if v is not None} or None
+    
+    # Run inference
+    result = inference(
+        species_list=args.species,
+        hierarchical_model_path=args.model,
+        video_path=args.video,
+        output_dir=args.output_dir,
+        fps=args.fps,
+        config=config,
+        backbone=args.backbone,
+    )
+    
+    if result.get("success"):
+        print(f"\n✓ Inference complete!")
+        print(f"  Output directory: {result['output_dir']}")
+        print(f"  Detections: {result['detections']}")
+        print(f"  Tracks: {result['tracks']} ({result['confirmed_tracks']} confirmed)")
+    else:
+        print(f"\n✗ Inference failed: {result.get('error')}")
+
+
 if __name__ == "__main__":
-    main() 
+    main()

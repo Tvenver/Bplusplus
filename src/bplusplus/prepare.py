@@ -27,7 +27,7 @@ from ultralytics.nn.modules.conv import Conv
 from ultralytics.nn.tasks import DetectionModel
 
 
-def prepare(input_directory: str, output_directory: str, img_size: int = 40):
+def prepare(input_directory: str, output_directory: str, img_size: int = 40, conf: float = 0.35, valid: float = 0.1):
     """
     Prepares a YOLO classification dataset by performing the following steps:
     1. Copies images from input directory to temporary directory and creates class mapping.
@@ -41,7 +41,13 @@ def prepare(input_directory: str, output_directory: str, img_size: int = 40):
         input_directory (str): The path to the input directory containing the images.
         output_directory (str): The path to the output directory where the prepared classification dataset will be saved.
         img_size (int, optional): The target size for the smallest dimension of cropped images. Defaults to 40.
+        conf (float, optional): YOLO detection confidence threshold. Defaults to 0.35.
+        valid (float, optional): Fraction of data for validation (0.0 to 1.0). 
+                                 0 = no validation split, 0.1 = 10% validation. Defaults to 0.1.
     """
+    # Validate the valid parameter
+    if not 0 <= valid <= 1:
+        raise ValueError(f"valid must be between 0 and 1, got {valid}")
     input_directory = Path(input_directory)
     output_directory = Path(output_directory)
 
@@ -51,6 +57,11 @@ def prepare(input_directory: str, output_directory: str, img_size: int = 40):
     print(f"Input directory: {input_directory}")
     print(f"Output directory: {output_directory}")
     print(f"Target image size: {img_size}px (smallest dimension)")
+    print(f"YOLO confidence threshold: {conf}")
+    if valid > 0:
+        print(f"Validation split: {valid*100:.0f}% validation, {(1-valid)*100:.0f}% training")
+    else:
+        print("Validation split: disabled (all images to training)")
     print()
 
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -77,7 +88,7 @@ def prepare(input_directory: str, output_directory: str, img_size: int = 40):
         # Step 4: Run YOLO inference
         print("STEP 3: Running YOLO inference to detect objects...")
         print("-" * 50)
-        labels_path = _run_yolo_inference(temp_dir_path, weights_path)
+        labels_path = _run_yolo_inference(temp_dir_path, weights_path, conf)
         print(f"✓ Step 3 completed: Labels generated at {labels_path}")
         print()
         
@@ -95,7 +106,7 @@ def prepare(input_directory: str, output_directory: str, img_size: int = 40):
         print("-" * 50)
         _finalize_dataset(
             class_mapping, temp_dir_path, output_directory, 
-            class_idxs, original_image_count, img_size
+            class_idxs, original_image_count, img_size, valid
         )
         print("✓ Step 5 completed: Classification dataset ready!")
         print()
@@ -162,8 +173,8 @@ def _prepare_model_and_clean_images(temp_dir_path: Path):
     
     # Setup model weights
     current_dir = Path(__file__).resolve().parent
-    weights_path = current_dir / 'v11small-generic.pt'
-    github_release_url = 'https://github.com/Tvenver/Bplusplus/releases/download/v1.2.3/v11small-generic.pt'
+    weights_path = current_dir / 'gbif-generic.pt'
+    github_release_url = 'https://github.com/Tvenver/Bplusplus/releases/download/weights/gbif-generic.pt'
     
     print(f"  Checking for YOLO model weights at: {weights_path}")
     if not weights_path.exists():
@@ -189,10 +200,15 @@ def _prepare_model_and_clean_images(temp_dir_path: Path):
     
     return weights_path
 
-def _run_yolo_inference(temp_dir_path: Path, weights_path: Path):
+def _run_yolo_inference(temp_dir_path: Path, weights_path: Path, conf: float):
     """
     Runs YOLO inference on all images to generate labels.
     
+    Args:
+        temp_dir_path (Path): Path to the working temp directory.
+        weights_path (Path): Path to YOLO weights.
+        conf (float): YOLO detection confidence threshold.
+
     Returns:
         Path: labels_path where the generated labels are stored
     """
@@ -224,7 +240,7 @@ def _run_yolo_inference(temp_dir_path: Path, weights_path: Path):
             try:
                 results = model.predict(
                     source=str(img_path),
-                    conf=0.35,
+                    conf=conf,
                     save=True,
                     save_txt=True,
                     project=temp_dir_path,
@@ -296,12 +312,16 @@ def _cleanup_and_process_labels(temp_dir_path: Path, labels_path: Path, class_ma
     return class_idxs
 
 def _finalize_dataset(class_mapping: dict, temp_dir_path: Path, output_directory: Path, 
-                     class_idxs: dict, original_image_count: int, img_size: int):
+                     class_idxs: dict, original_image_count: int, img_size: int, 
+                     valid_fraction: float = 0.1):
     """
     Finalizes the dataset by creating cropped classification images and splitting into train/valid sets.
+    
+    Args:
+        valid_fraction: Fraction of data for validation (0.0 to 1.0). 0 = no validation split.
     """
     # Split data into train/valid with cropped classification images
-    __classification_split(class_mapping, temp_dir_path, output_directory, img_size)
+    __classification_split(class_mapping, temp_dir_path, output_directory, img_size, valid_fraction)
     
     # Generate final report
     print("  Generating final statistics...")
@@ -430,7 +450,7 @@ def __delete_invalid_txt_files(images_path: Path, labels_path: Path):
 
 
 
-def __classification_split(class_mapping: dict, temp_dir_path: Path, output_directory: Path, img_size: int):
+def __classification_split(class_mapping: dict, temp_dir_path: Path, output_directory: Path, img_size: int, valid_fraction: float = 0.1):
     """
     Splits the data into train and validation sets for classification tasks,
     cropping images according to their YOLO labels but preserving original class structure.
@@ -440,22 +460,30 @@ def __classification_split(class_mapping: dict, temp_dir_path: Path, output_dire
         temp_dir_path (Path): The path to the temporary directory containing the images.
         output_directory (Path): The path to the output directory where train and valid splits will be created.
         img_size (int): The target size for the smallest dimension of cropped images.
+        valid_fraction (float): Fraction of data for validation (0.0 to 1.0). 0 = no validation split.
     """
     images_dir = temp_dir_path / "images"
     labels_dir = temp_dir_path / "predict" / "labels"
     
-    # Create train and valid directories
-    train_dir = output_directory / 'train'
-    valid_dir = output_directory / 'valid'
+    create_valid = valid_fraction > 0
     
+    # Create train directory (and optionally valid)
+    train_dir = output_directory / 'train'
     train_dir.mkdir(parents=True, exist_ok=True)
-    valid_dir.mkdir(parents=True, exist_ok=True)
+    
+    if create_valid:
+        valid_dir = output_directory / 'valid'
+        valid_dir.mkdir(parents=True, exist_ok=True)
+        print(f"  Creating train and validation directories for {len(class_mapping)} classes...")
+    else:
+        valid_dir = None
+        print(f"  Creating train directory for {len(class_mapping)} classes (no validation split)...")
     
     # Create class directories based on class_mapping
-    print(f"  Creating train and validation directories for {len(class_mapping)} classes...")
     for class_name in class_mapping:
         (train_dir / class_name).mkdir(exist_ok=True)
-        (valid_dir / class_name).mkdir(exist_ok=True)
+        if create_valid:
+            (valid_dir / class_name).mkdir(exist_ok=True)
         print(f"    ✓ Created directories for class: {class_name}")
     
     # Process each class folder and its images
@@ -539,21 +567,34 @@ def __classification_split(class_mapping: dict, temp_dir_path: Path, output_dire
     
     print(f"  ✓ Successfully processed {total_valid} valid images from {total_processed} total images")
     
-    # Shuffle and split images
-    print("  Shuffling and splitting images into train/validation sets...")
+    # Shuffle images
     random.shuffle(valid_images)
-    split_idx = int(len(valid_images) * 0.9)
-    train_images = valid_images[:split_idx]
-    valid_images_split = valid_images[split_idx:]
     
-    print(f"  Split: {len(train_images)} training images, {len(valid_images_split)} validation images")
+    # Split into train/valid or put all in train
+    if create_valid:
+        train_fraction = 1.0 - valid_fraction
+        print(f"  Shuffling and splitting images ({train_fraction*100:.0f}% train, {valid_fraction*100:.0f}% validation)...")
+        split_idx = int(len(valid_images) * train_fraction)
+        train_images = valid_images[:split_idx]
+        valid_images_split = valid_images[split_idx:]
+        print(f"  Split: {len(train_images)} training images, {len(valid_images_split)} validation images")
+    else:
+        print("  Shuffling images (no validation split)...")
+        train_images = valid_images
+        valid_images_split = []
+        print(f"  All {len(train_images)} images will be used for training")
     
     # Save images to train/valid directories
     print("  Saving cropped and resized images...")
     saved_train = 0
     saved_valid = 0
     
-    for image_set, dest_dir, split_name in [(train_images, train_dir, "train"), (valid_images_split, valid_dir, "valid")]:
+    # Build list of (image_set, dest_dir, split_name) tuples
+    save_tasks = [(train_images, train_dir, "train")]
+    if create_valid and valid_images_split:
+        save_tasks.append((valid_images_split, valid_dir, "valid"))
+    
+    for image_set, dest_dir, split_name in save_tasks:
         print(f"    Saving {len(image_set)} images to {split_name} set...")
         for orig_file, img, class_name in image_set:
             output_path = dest_dir / class_name / (orig_file.stem + '.jpg')
@@ -569,7 +610,10 @@ def __classification_split(class_mapping: dict, temp_dir_path: Path, output_dire
             else:
                 saved_valid += 1
     
-    print(f"    ✓ Saved {saved_train} train images and {saved_valid} validation images")
+    if create_valid:
+        print(f"    ✓ Saved {saved_train} train images and {saved_valid} validation images")
+    else:
+        print(f"    ✓ Saved {saved_train} training images (no validation split)")
     
     # Print detailed summary table
     print(f"  Final dataset summary:")
@@ -579,29 +623,39 @@ def __classification_split(class_mapping: dict, temp_dir_path: Path, output_dire
     max_class_name_length = max(len(class_name) for class_name in class_mapping.keys())
     class_col_width = max(max_class_name_length, len("Class"))
     
-    # Print table header
-    print(f"  {'Class':<{class_col_width}} | {'Train':<7} | {'Valid':<7} | {'Total':<7}")
-    print(f"  {'-' * class_col_width}-+-{'-' * 7}-+-{'-' * 7}-+-{'-' * 7}")
+    # Print table header (with or without Valid column)
+    if create_valid:
+        print(f"  {'Class':<{class_col_width}} | {'Train':<7} | {'Valid':<7} | {'Total':<7}")
+        print(f"  {'-' * class_col_width}-+-{'-' * 7}-+-{'-' * 7}-+-{'-' * 7}")
+    else:
+        print(f"  {'Class':<{class_col_width}} | {'Train':<7}")
+        print(f"  {'-' * class_col_width}-+-{'-' * 7}")
     
     # Print data for each class and calculate totals
     total_train = 0
     total_valid = 0
-    total_overall = 0
     
     for class_name in sorted(class_mapping.keys()):  # Sort for consistent output
         train_count = len(list((train_dir / class_name).glob('*.*')))
-        valid_count = len(list((valid_dir / class_name).glob('*.*')))
-        class_total = train_count + valid_count
         
-        print(f"  {class_name:<{class_col_width}} | {train_count:<7} | {valid_count:<7} | {class_total:<7}")
+        if create_valid:
+            valid_count = len(list((valid_dir / class_name).glob('*.*')))
+            class_total = train_count + valid_count
+            print(f"  {class_name:<{class_col_width}} | {train_count:<7} | {valid_count:<7} | {class_total:<7}")
+            total_valid += valid_count
+        else:
+            print(f"  {class_name:<{class_col_width}} | {train_count:<7}")
         
         total_train += train_count
-        total_valid += valid_count
-        total_overall += class_total
     
     # Print totals row
-    print(f"  {'-' * class_col_width}-+-{'-' * 7}-+-{'-' * 7}-+-{'-' * 7}")
-    print(f"  {'TOTAL':<{class_col_width}} | {total_train:<7} | {total_valid:<7} | {total_overall:<7}")
+    if create_valid:
+        total_overall = total_train + total_valid
+        print(f"  {'-' * class_col_width}-+-{'-' * 7}-+-{'-' * 7}-+-{'-' * 7}")
+        print(f"  {'TOTAL':<{class_col_width}} | {total_train:<7} | {total_valid:<7} | {total_overall:<7}")
+    else:
+        print(f"  {'-' * class_col_width}-+-{'-' * 7}")
+        print(f"  {'TOTAL':<{class_col_width}} | {total_train:<7}")
     print()
     
     print(f"  ✓ Classification dataset created successfully at: {output_directory}")

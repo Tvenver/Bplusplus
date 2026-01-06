@@ -14,7 +14,7 @@ import logging
 from tqdm import tqdm  
 import sys
 
-def train(batch_size=4, epochs=30, patience=3, img_size=640, data_dir='input', output_dir='./output', species_list=None, num_workers=4):
+def train(batch_size=4, epochs=30, patience=3, img_size=640, data_dir='input', output_dir='./output', species_list=None, num_workers=4, train_transforms=None, backbone: str = "resnet50"):
     """
     Main function to run the entire training pipeline.
     Sets up datasets, model, training process and handles errors.
@@ -29,13 +29,15 @@ def train(batch_size=4, epochs=30, patience=3, img_size=640, data_dir='input', o
         species_list (list): List of species names for training. Required.
         num_workers (int): Number of DataLoader worker processes. 
                           Set to 0 to disable multiprocessing (most stable). Default: 4
+        train_transforms: Optional custom torchvision transforms for training data.
+        backbone (str): ResNet backbone to use ('resnet18', 'resnet50', 'resnet101'). Default: 'resnet50'
     """
     global logger, device
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     logger = logging.getLogger(__name__)
 
-    logger.info(f"Hyperparameters - Batch size: {batch_size}, Epochs: {epochs}, Patience: {patience}, Image size: {img_size}, Data directory: {data_dir}, Output directory: {output_dir}, Num workers: {num_workers}")
+    logger.info(f"Hyperparameters - Batch size: {batch_size}, Epochs: {epochs}, Patience: {patience}, Image size: {img_size}, Data directory: {data_dir}, Output directory: {output_dir}, Num workers: {num_workers}, Backbone: {backbone}")
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -67,31 +69,49 @@ def train(batch_size=4, epochs=30, patience=3, img_size=640, data_dir='input', o
     num_classes_per_level = [len(taxonomy[level]) if isinstance(taxonomy[level], list) 
                             else len(taxonomy[level].keys()) for level in sorted(taxonomy.keys())]
     
+    def _has_images(path):
+        for _, _, files in os.walk(path):
+            if any(f.lower().endswith(('.jpg', '.jpeg', '.png')) for f in files):
+                return True
+        return False
+
     train_dataset = InsectDataset(
         root_dir=train_dir,
-        transform=get_transforms(is_training=True, img_size=img_size),
+        transform=train_transforms or get_transforms(is_training=True, img_size=img_size),
         taxonomy=taxonomy,
         level_to_idx=level_to_idx
     )
     
-    val_dataset = InsectDataset(
-        root_dir=val_dir,
-        transform=get_transforms(is_training=False, img_size=img_size),
-        taxonomy=taxonomy,
-        level_to_idx=level_to_idx
-    )
+    # Analyze class balance and warn about imbalances
+    balance_stats = analyze_class_balance(train_dataset, taxonomy, level_to_idx)
     
+    # Log balance summary
+    for level, stats in balance_stats.items():
+        level_name = {1: "Family", 2: "Genus", 3: "Species"}[level]
+        logger.info(f"{level_name} balance: {stats['severity']} (ratio: {stats['imbalance_ratio']:.1f}x, CV: {stats['cv']:.1f}%)")
+
+    validation_available = os.path.isdir(val_dir) and _has_images(val_dir)
+    if not validation_available:
+        logger.warning("Validation skipped: 'valid' directory missing or contains no images.")
+        val_loader = None
+    else:
+        val_dataset = InsectDataset(
+            root_dir=val_dir,
+            transform=get_transforms(is_training=False, img_size=img_size),
+            taxonomy=taxonomy,
+            level_to_idx=level_to_idx
+        )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers
+        )
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=num_workers
-    )
-    
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
         num_workers=num_workers
     )
     
@@ -100,7 +120,8 @@ def train(batch_size=4, epochs=30, patience=3, img_size=640, data_dir='input', o
         model = HierarchicalInsectClassifier(
             num_classes_per_level=num_classes_per_level,
             level_to_idx=level_to_idx,
-            parent_child_relationship=parent_child_relationship
+            parent_child_relationship=parent_child_relationship,
+            backbone=backbone
         )
         logger.info(f"Model structure initialized with {sum(p.numel() for p in model.parameters())} parameters")
         
@@ -138,7 +159,8 @@ def train(batch_size=4, epochs=30, patience=3, img_size=640, data_dir='input', o
             species_list=species_list,
             num_epochs=epochs,
             patience=patience,
-            best_model_path=best_model_path
+            best_model_path=best_model_path,
+            backbone=backbone
         )
         
         logger.info("Model saved successfully with taxonomy information!")
@@ -150,6 +172,155 @@ def train(batch_size=4, epochs=30, patience=3, img_size=640, data_dir='input', o
         logger.error(f"Critical error during model setup or training: {str(e)}")
         logger.exception("Stack trace:")
         raise
+
+def analyze_class_balance(dataset, taxonomy, level_to_idx):
+    """
+    Analyze class balance across all taxonomic levels and warn about imbalances.
+    
+    Args:
+        dataset: InsectDataset instance
+        taxonomy: Taxonomy dictionary
+        level_to_idx: Level to index mapping
+    
+    Returns:
+        dict: Balance statistics for each level
+    """
+    # Count samples per class at each level
+    level_names = {1: "Family", 2: "Genus", 3: "Species"}
+    level_counts = {1: defaultdict(int), 2: defaultdict(int), 3: defaultdict(int)}
+    
+    for sample in dataset.samples:
+        family, genus, species = sample['labels']
+        level_counts[1][family] += 1
+        level_counts[2][genus] += 1
+        level_counts[3][species] += 1
+    
+    # Analyze each level
+    balance_stats = {}
+    has_severe_imbalance = False
+    
+    print("\n" + "=" * 80)
+    print("CLASS BALANCE ANALYSIS")
+    print("=" * 80)
+    
+    for level in [1, 2, 3]:
+        counts = level_counts[level]
+        if not counts:
+            continue
+            
+        level_name = level_names[level]
+        values = list(counts.values())
+        classes = list(counts.keys())
+        
+        total = sum(values)
+        min_count = min(values)
+        max_count = max(values)
+        mean_count = np.mean(values)
+        std_count = np.std(values)
+        
+        # Imbalance ratio: how many times larger is the biggest class vs smallest
+        imbalance_ratio = max_count / min_count if min_count > 0 else float('inf')
+        
+        # Coefficient of variation (CV): std/mean - higher means more imbalanced
+        cv = (std_count / mean_count) * 100 if mean_count > 0 else 0
+        
+        # Find underrepresented and overrepresented classes
+        underrepresented = [(c, n) for c, n in counts.items() if n < mean_count * 0.5]
+        overrepresented = [(c, n) for c, n in counts.items() if n > mean_count * 2]
+        
+        # Determine severity
+        if imbalance_ratio > 10:
+            severity = "SEVERE"
+            has_severe_imbalance = True
+        elif imbalance_ratio > 5:
+            severity = "MODERATE"
+        elif imbalance_ratio > 2:
+            severity = "MILD"
+        else:
+            severity = "BALANCED"
+        
+        balance_stats[level] = {
+            'counts': dict(counts),
+            'min': min_count,
+            'max': max_count,
+            'mean': mean_count,
+            'std': std_count,
+            'imbalance_ratio': imbalance_ratio,
+            'cv': cv,
+            'severity': severity,
+        }
+        
+        # Print level summary
+        print(f"\n{level_name.upper()} LEVEL ({len(classes)} classes, {total} total samples)")
+        print("-" * 60)
+        
+        # Sort by count for display
+        sorted_counts = sorted(counts.items(), key=lambda x: x[1], reverse=True)
+        
+        # Calculate ideal count for visual bar
+        ideal_count = total / len(classes)
+        
+        for class_name, count in sorted_counts:
+            pct = (count / total) * 100
+            bar_len = int((count / max_count) * 30)
+            bar = "█" * bar_len + "░" * (30 - bar_len)
+            
+            # Mark under/over represented
+            if count < mean_count * 0.5:
+                marker = " ⚠️ LOW"
+            elif count > mean_count * 2:
+                marker = " ⚠️ HIGH"
+            else:
+                marker = ""
+            
+            print(f"  {class_name:<30} {bar} {count:>5} ({pct:>5.1f}%){marker}")
+        
+        print(f"\n  Statistics:")
+        print(f"    Min: {min_count}, Max: {max_count}, Mean: {mean_count:.1f}, Std: {std_count:.1f}")
+        print(f"    Imbalance ratio: {imbalance_ratio:.1f}x (max/min)")
+        print(f"    Coefficient of variation: {cv:.1f}%")
+        print(f"    Balance status: {severity}")
+        
+        # Detailed warnings
+        if severity in ["SEVERE", "MODERATE"]:
+            print(f"\n  ⚠️  WARNING: {severity} class imbalance detected at {level_name} level!")
+            
+            if underrepresented:
+                print(f"\n  Underrepresented classes (< 50% of mean):")
+                for c, n in sorted(underrepresented, key=lambda x: x[1]):
+                    deficit = int(mean_count - n)
+                    print(f"    • {c}: {n} samples (need ~{deficit} more for balance)")
+            
+            if overrepresented:
+                print(f"\n  Overrepresented classes (> 200% of mean):")
+                for c, n in sorted(overrepresented, key=lambda x: x[1], reverse=True):
+                    excess = int(n - mean_count)
+                    print(f"    • {c}: {n} samples ({excess} above mean)")
+    
+    print("\n" + "=" * 80)
+    
+    if has_severe_imbalance:
+        print("\n⚠️  SEVERE CLASS IMBALANCE DETECTED!")
+        print("-" * 60)
+        print("This can cause the following problems:")
+        print("  1. BIASED PREDICTIONS: Model will favor majority classes")
+        print("  2. POOR MINORITY RECALL: Rare classes may be ignored entirely")
+        print("  3. MISLEADING ACCURACY: High accuracy doesn't mean good performance")
+        print("  4. UNSTABLE TRAINING: Loss may be dominated by majority classes")
+        print("\nRecommended actions:")
+        print("  • Collect more images for underrepresented classes")
+        print("  • Use data augmentation more aggressively on minority classes")
+        print("  • Consider weighted loss functions (not yet implemented)")
+        print("  • Consider oversampling minority / undersampling majority classes")
+        print("  • Evaluate using per-class metrics (precision, recall, F1)")
+        print("-" * 60)
+    else:
+        print("\n✓ Class balance is acceptable for training.")
+    
+    print("=" * 80 + "\n")
+    
+    return balance_stats
+
 
 def get_taxonomy(species_list):
     """
@@ -358,13 +529,14 @@ class InsectDataset(Dataset):
 class HierarchicalInsectClassifier(nn.Module):
     """
     Deep learning model for hierarchical insect classification.
-    Uses ResNet50 backbone with multiple classification branches for different taxonomic levels.
+    Uses a ResNet backbone with multiple classification branches for different taxonomic levels.
     Includes anomaly detection capabilities.
     """
-    def __init__(self, num_classes_per_level, level_to_idx=None, parent_child_relationship=None):
+    def __init__(self, num_classes_per_level, level_to_idx=None, parent_child_relationship=None, backbone: str = "resnet50"):
         super(HierarchicalInsectClassifier, self).__init__()
         
-        self.backbone = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
+        self.backbone = self._build_backbone(backbone)
+        self.backbone_name = backbone
         backbone_output_features = self.backbone.fc.in_features
         self.backbone.fc = nn.Identity()
         
@@ -388,6 +560,17 @@ class HierarchicalInsectClassifier(nn.Module):
         self.register_buffer('class_stds', torch.ones(sum(num_classes_per_level)))
         self.class_counts = [0] * sum(num_classes_per_level)
         self.output_history = defaultdict(list)
+
+    @staticmethod
+    def _build_backbone(backbone: str):
+        name = backbone.lower()
+        if name == "resnet18":
+            return models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
+        if name == "resnet50":
+            return models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
+        if name == "resnet101":
+            return models.resnet101(weights=models.ResNet101_Weights.DEFAULT)
+        raise ValueError(f"Unsupported backbone '{backbone}'. Choose from 'resnet18', 'resnet50', 'resnet101'.")
         
     def forward(self, x):
         R0 = self.backbone(x)
@@ -569,7 +752,7 @@ def get_transforms(is_training=True, img_size=640):
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
 
-def train_model(model, train_loader, val_loader, criterion, optimizer, level_to_idx, parent_child_relationship, taxonomy, species_list, num_epochs=10, patience=5, best_model_path='best_multitask.pt'):
+def train_model(model, train_loader, val_loader, criterion, optimizer, level_to_idx, parent_child_relationship, taxonomy, species_list, num_epochs=10, patience=5, best_model_path='best_multitask.pt', backbone='resnet50'):
     """
     Trains the hierarchical classifier model.
     Implements early stopping, validation, and model checkpointing.
@@ -579,6 +762,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, level_to_
     
     best_val_loss = float('inf')
     epochs_without_improvement = 0
+    validation_enabled = val_loader is not None
     
     for epoch in range(num_epochs):
         model.train()
@@ -629,6 +813,13 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, level_to_
         
         model.update_anomaly_stats()
         
+        if not validation_enabled:
+            print(f"\nEpoch {epoch+1}/{num_epochs}")
+            print(f"Train Loss: {epoch_loss:.4f} (CE: {epoch_ce_loss:.4f}, Dep: {epoch_dep_loss:.4f})")
+            print("Validation skipped (no valid data found).")
+            print('-' * 60)
+            continue
+
         model.eval()
         val_running_loss = 0.0
         val_correct_predictions = [0] * model.num_levels
@@ -685,7 +876,8 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, level_to_
                 'taxonomy': taxonomy,
                 'level_to_idx': level_to_idx,
                 'parent_child_relationship': parent_child_relationship,
-                'species_list': species_list
+                'species_list': species_list,
+                'backbone': backbone
             }, best_model_path)
             logger.info(f"Saved best model at epoch {epoch+1} with validation loss: {best_val_loss:.4f}")
         else:
@@ -697,6 +889,17 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, level_to_
             print(f"Early stopping triggered after {epoch+1} epochs")
             break
     
+    if not validation_enabled:
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'taxonomy': taxonomy,
+            'level_to_idx': level_to_idx,
+            'parent_child_relationship': parent_child_relationship,
+            'species_list': species_list,
+            'backbone': backbone
+        }, best_model_path)
+        logger.info(f"Saved model (validation skipped) at {best_model_path}")
+
     logger.info("Training completed successfully")
     return model
 
@@ -704,7 +907,7 @@ if __name__ == '__main__':
     species_list = [
         "Coccinella septempunctata", "Apis mellifera", "Bombus lapidarius", "Bombus terrestris",
         "Eupeodes corollae", "Episyrphus balteatus", "Aglais urticae", "Vespula vulgaris",
-        "Eristalis tenax", "unknown"
+        "Eristalis tenax"
     ]
     train(species_list=species_list, epochs=2)
 

@@ -1,0 +1,77 @@
+# =============================================================================
+# B++ DETECTION CONFIGURATION
+# =============================================================================
+# This config controls motion-based insect detection parameters.
+# All values shown are defaults - modify as needed for your use case.
+#
+# Usage:
+#   results = inference(..., config="detection_config.yaml")
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# COHESIVENESS PARAMETERS
+# -----------------------------------------------------------------------------
+# These filter scattered motion (wind-blown plants) vs compact motion (insects)
+
+# Min ratio of largest blob to total motion area in detection region
+# Higher = stricter, rejects fragmented detections
+min_largest_blob_ratio: 0.80
+
+# Max number of separate blobs allowed in a detection region
+# Lower = stricter, rejects scattered motion
+max_num_blobs: 5
+
+# -----------------------------------------------------------------------------
+# SHAPE PARAMETERS
+# -----------------------------------------------------------------------------
+# Filter detections by contour geometry
+
+# Min contour area in pixels² (rejects noise/tiny detections)
+min_area: 200
+
+# Max contour area in pixels² (rejects large moving objects)
+max_area: 40000
+
+# Min area/perimeter ratio (rejects thin/elongated shapes)
+min_density: 3.0
+
+# Min convex hull fill ratio (rejects irregular/fragmented shapes)
+# 1.0 = perfectly convex, lower = more irregular allowed
+min_solidity: 0.55
+
+# -----------------------------------------------------------------------------
+# TRACKING PARAMETERS
+# -----------------------------------------------------------------------------
+# Control how detections are linked into tracks
+
+# Min NET displacement in pixels for track confirmation
+# Filters stationary false positives
+min_displacement: 50
+
+# Min path points required before topology analysis
+min_path_points: 10
+
+# Max allowed jump between consecutive frames (pixels)
+# Larger = more tolerant of fast movement, but may link separate objects
+max_frame_jump: 100
+
+# How long to remember a lost track (seconds)
+# Helps re-link tracks after brief occlusions
+lost_track_seconds: 1.5
+
+# -----------------------------------------------------------------------------
+# PATH TOPOLOGY PARAMETERS
+# -----------------------------------------------------------------------------
+# Confirm insect-like movement patterns vs random/stationary motion
+
+# Max ratio of revisited positions (insects explore new areas)
+# Lower = stricter, requires more exploration
+max_revisit_ratio: 0.30
+
+# Min forward progression ratio (insects move purposefully)
+# Higher = stricter, requires more directional movement
+min_progression_ratio: 0.70
+
+# Max directional variance (insects maintain relatively consistent heading)
+# Lower = stricter, requires more consistent direction
+max_directional_variance: 0.90
