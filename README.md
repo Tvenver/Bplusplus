@@ -86,7 +86,7 @@ bplusplus.prepare(
     output_directory=PREPARED_DATA_DIR,
     img_size=640,        # Target image size for training
     conf=0.6,            # Detection confidence threshold (0-1)
-    valid_fraction=0.1,  # Validation split ratio (0-1), set to 0 for no validation
+    valid=0.1,  # Validation split ratio (0-1), set to 0 for no validation
 )
 ```
 
