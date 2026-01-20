@@ -463,13 +463,14 @@ class VideoInferenceProcessor:
         
         return fg_mask, frame_detections
     
-    def classify_confirmed_tracks(self, video_path, confirmed_track_ids):
+    def classify_confirmed_tracks(self, video_path, confirmed_track_ids, crops_dir=None):
         """
         Classify only the confirmed tracks by re-reading relevant frames.
         
         Args:
             video_path: Path to original video
             confirmed_track_ids: Set of track IDs that passed topology analysis
+            crops_dir: Optional directory to save cropped frames
             
         Returns:
             dict: track_id -> list of classifications
@@ -479,6 +480,15 @@ class VideoInferenceProcessor:
             return {}
         
         print(f"\nClassifying {len(confirmed_track_ids)} confirmed tracks...")
+        
+        # Setup crops directory if requested
+        if crops_dir:
+            os.makedirs(crops_dir, exist_ok=True)
+            # Create subdirectory for each track
+            for track_id in confirmed_track_ids:
+                track_dir = os.path.join(crops_dir, str(track_id)[:8])
+                os.makedirs(track_dir, exist_ok=True)
+            print(f"  Saving crops to: {crops_dir}")
         
         # Group detections by frame for confirmed tracks
         frames_to_classify = defaultdict(list)
@@ -518,11 +528,22 @@ class VideoInferenceProcessor:
                 track_classifications[det['track_id']].append(classification)
                 classified_count += 1
                 
+                # Save crop if requested
+                if crops_dir:
+                    track_id = det['track_id']
+                    track_dir = os.path.join(crops_dir, str(track_id)[:8])
+                    crop = frame[int(y1):int(y2), int(x1):int(x2)]
+                    if crop.size > 0:
+                        crop_path = os.path.join(track_dir, f"frame_{target_frame:06d}.jpg")
+                        cv2.imwrite(crop_path, crop)
+                
                 if classified_count % 20 == 0:
                     print(f"  Classified {classified_count} detections...", end='\r')
         
         cap.release()
         print(f"\n✓ Classified {classified_count} detections from {len(confirmed_track_ids)} tracks")
+        if crops_dir:
+            print(f"✓ Saved {classified_count} crops to {crops_dir}")
         
         return track_classifications
     
@@ -736,7 +757,7 @@ class VideoInferenceProcessor:
 # VIDEO PROCESSING
 # ============================================================================
 
-def process_video(video_path, processor, output_paths, show_video=False, fps=None):
+def process_video(video_path, processor, output_paths, show_video=False, fps=None, crops_dir=None):
     """
     Process video file with efficient classification (confirmed tracks only).
     
@@ -752,6 +773,7 @@ def process_video(video_path, processor, output_paths, show_video=False, fps=Non
         output_paths: Dict with output file paths
         show_video: Display video while processing
         fps: Target FPS (skip frames if lower than input)
+        crops_dir: Optional directory to save cropped frames for each track
         
     Returns:
         list: Aggregated results
@@ -832,7 +854,7 @@ def process_video(video_path, processor, output_paths, show_video=False, fps=Non
     print("="*60)
     
     if confirmed_track_ids:
-        processor.classify_confirmed_tracks(video_path, confirmed_track_ids)
+        processor.classify_confirmed_tracks(video_path, confirmed_track_ids, crops_dir=crops_dir)
         results = processor.hierarchical_aggregation(confirmed_track_ids)
     else:
         results = []
@@ -1050,6 +1072,7 @@ def inference(
     fps=None,
     config=None,
     backbone="resnet50",
+    crops=False,
 ):
     """
     Run inference on a video file.
@@ -1066,6 +1089,7 @@ def inference(
             - dict: config parameters directly
         backbone: ResNet backbone ('resnet18', 'resnet50', 'resnet101').
                   If model checkpoint contains backbone info, it will be used instead.
+        crops: If True, save cropped frames for each classified track
     
     Returns:
         dict: Processing results with output file paths
@@ -1075,6 +1099,7 @@ def inference(
         - {video_name}_debug.mp4: Side-by-side with GMM motion mask
         - {video_name}_results.csv: Aggregated track results
         - {video_name}_detections.csv: Frame-by-frame detections
+        - {video_name}_crops/ (if crops=True): Directory with cropped frames per track
     """
     if not os.path.exists(video_path):
         print(f"Error: Video not found: {video_path}")
@@ -1106,6 +1131,11 @@ def inference(
         "detections_csv": os.path.join(output_dir, f"{video_name}_detections.csv"),
     }
     
+    # Setup crops directory if requested
+    crops_dir = os.path.join(output_dir, f"{video_name}_crops") if crops else None
+    if crops_dir:
+        output_paths["crops_dir"] = crops_dir
+    
     print("\n" + "="*60)
     print("BPLUSPLUS INFERENCE")
     print("="*60)
@@ -1133,7 +1163,8 @@ def inference(
             video_path=video_path,
             processor=processor,
             output_paths=output_paths,
-            fps=fps
+            fps=fps,
+            crops_dir=crops_dir
         )
         
         return {
@@ -1174,6 +1205,7 @@ Output files generated in output directory:
   - {video_name}_debug.mp4: Side-by-side view with GMM motion mask  
   - {video_name}_results.csv: Aggregated track results
   - {video_name}_detections.csv: Frame-by-frame detections
+  - {video_name}_crops/ (with --crops): Cropped frames for each track
         """
     )
     
@@ -1192,6 +1224,8 @@ Output files generated in output directory:
     parser.add_argument('--backbone', '-b', default='resnet50',
                        choices=['resnet18', 'resnet50', 'resnet101'],
                        help='ResNet backbone (default: resnet50, overridden by checkpoint if saved)')
+    parser.add_argument('--crops', action='store_true',
+                       help='Save cropped frames for each classified track')
     
     # Detection parameters (override config)
     defaults = DEFAULT_DETECTION_CONFIG
@@ -1267,6 +1301,7 @@ Output files generated in output directory:
         fps=args.fps,
         config=config,
         backbone=args.backbone,
+        crops=args.crops,
     )
     
     if result.get("success"):
