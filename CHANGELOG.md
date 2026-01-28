@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.3] - 2025-01-28
+
+### Added
+- **Gaussian blur option**: New `blur` parameter in `prepare()` to apply Gaussian blur before resizing (as fraction of image size, 0-1)
+- **Skip video rendering**: New `save_video` parameter in `inference()` to skip video output and only generate CSVs (faster processing)
+- **PNG support**: `prepare()` now accepts PNG images in addition to JPG/JPEG
+
+### Changed
+- Updated documentation in README and notebook with new parameters
+
 ## [2.0.2] - 2025-01-20
 
 ### Added

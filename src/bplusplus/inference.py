@@ -862,23 +862,29 @@ def process_video(video_path, processor, output_paths, show_video=False, fps=Non
     # ==========================================================================
     # PHASE 4: Render Videos
     # ==========================================================================
-    print("\n" + "="*60)
-    print("PHASE 4: RENDERING VIDEOS")
-    print("="*60)
-    
-    # Render debug video (all detections, showing confirmed vs unconfirmed)
-    print(f"\nRendering debug video (all detections)...")
-    _render_debug_video(
-        video_path, output_paths["debug_video"],
-        processor, confirmed_track_ids, all_track_info, input_fps
-    )
-    
-    # Render annotated video (confirmed tracks with classifications)
-    print(f"\nRendering annotated video ({len(confirmed_track_ids)} confirmed tracks)...")
-    _render_annotated_video(
-        video_path, output_paths["annotated_video"],
-        processor, confirmed_track_ids, input_fps
-    )
+    # Render videos if requested
+    if "annotated_video" in output_paths or "debug_video" in output_paths:
+        print("\n" + "="*60)
+        print("PHASE 4: RENDERING VIDEOS")
+        print("="*60)
+        
+        # Render debug video (all detections, showing confirmed vs unconfirmed)
+        if "debug_video" in output_paths:
+            print(f"\nRendering debug video (all detections)...")
+            _render_debug_video(
+                video_path, output_paths["debug_video"],
+                processor, confirmed_track_ids, all_track_info, input_fps
+            )
+        
+        # Render annotated video (confirmed tracks with classifications)
+        if "annotated_video" in output_paths:
+            print(f"\nRendering annotated video ({len(confirmed_track_ids)} confirmed tracks)...")
+            _render_annotated_video(
+                video_path, output_paths["annotated_video"],
+                processor, confirmed_track_ids, input_fps
+            )
+    else:
+        print("\n(Video rendering skipped)")
     
     # Save results
     processor.save_results(results, output_paths)
@@ -1073,6 +1079,7 @@ def inference(
     config=None,
     backbone="resnet50",
     crops=False,
+    save_video=True,
 ):
     """
     Run inference on a video file.
@@ -1090,13 +1097,14 @@ def inference(
         backbone: ResNet backbone ('resnet18', 'resnet50', 'resnet101').
                   If model checkpoint contains backbone info, it will be used instead.
         crops: If True, save cropped frames for each classified track
+        save_video: If True, save annotated and debug videos. Defaults to True.
     
     Returns:
         dict: Processing results with output file paths
         
     Generated files in output_dir:
-        - {video_name}_annotated.mp4: Video with detection boxes and paths
-        - {video_name}_debug.mp4: Side-by-side with GMM motion mask
+        - {video_name}_annotated.mp4: Video with detection boxes and paths (if save_video=True)
+        - {video_name}_debug.mp4: Side-by-side with GMM motion mask (if save_video=True)
         - {video_name}_results.csv: Aggregated track results
         - {video_name}_detections.csv: Frame-by-frame detections
         - {video_name}_crops/ (if crops=True): Directory with cropped frames per track
@@ -1125,11 +1133,13 @@ def inference(
     video_name = os.path.splitext(os.path.basename(video_path))[0]
     
     output_paths = {
-        "annotated_video": os.path.join(output_dir, f"{video_name}_annotated.mp4"),
-        "debug_video": os.path.join(output_dir, f"{video_name}_debug.mp4"),
         "results_csv": os.path.join(output_dir, f"{video_name}_results.csv"),
         "detections_csv": os.path.join(output_dir, f"{video_name}_detections.csv"),
     }
+    
+    if save_video:
+        output_paths["annotated_video"] = os.path.join(output_dir, f"{video_name}_annotated.mp4")
+        output_paths["debug_video"] = os.path.join(output_dir, f"{video_name}_debug.mp4")
     
     # Setup crops directory if requested
     crops_dir = os.path.join(output_dir, f"{video_name}_crops") if crops else None
@@ -1226,6 +1236,8 @@ Output files generated in output directory:
                        help='ResNet backbone (default: resnet50, overridden by checkpoint if saved)')
     parser.add_argument('--crops', action='store_true',
                        help='Save cropped frames for each classified track')
+    parser.add_argument('--no-video', action='store_true',
+                       help='Skip saving annotated and debug videos')
     
     # Detection parameters (override config)
     defaults = DEFAULT_DETECTION_CONFIG
@@ -1302,6 +1314,7 @@ Output files generated in output directory:
         config=config,
         backbone=args.backbone,
         crops=args.crops,
+        save_video=not args.no_video,
     )
     
     if result.get("success"):

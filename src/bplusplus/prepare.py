@@ -7,7 +7,7 @@ from typing import Optional
 
 import requests
 import torch
-from PIL import Image
+from PIL import Image, ImageFilter
 from torch import serialization
 from torch.nn import Module, ModuleDict, ModuleList
 from torch.nn.modules.activation import LeakyReLU, ReLU, SiLU
@@ -27,7 +27,7 @@ from ultralytics.nn.modules.conv import Conv
 from ultralytics.nn.tasks import DetectionModel
 
 
-def prepare(input_directory: str, output_directory: str, img_size: int = 40, conf: float = 0.35, valid: float = 0.1):
+def prepare(input_directory: str, output_directory: str, img_size: int = 40, conf: float = 0.35, valid: float = 0.1, blur: Optional[float] = None):
     """
     Prepares a YOLO classification dataset by performing the following steps:
     1. Copies images from input directory to temporary directory and creates class mapping.
@@ -44,10 +44,16 @@ def prepare(input_directory: str, output_directory: str, img_size: int = 40, con
         conf (float, optional): YOLO detection confidence threshold. Defaults to 0.35.
         valid (float, optional): Fraction of data for validation (0.0 to 1.0). 
                                  0 = no validation split, 0.1 = 10% validation. Defaults to 0.1.
+        blur (float, optional): Gaussian blur as fraction of image size (0.0 to 1.0).
+                                Applied before resizing. 0.01 = 1% of smallest dimension.
+                                None or 0 means no blur. Defaults to None.
     """
     # Validate the valid parameter
     if not 0 <= valid <= 1:
         raise ValueError(f"valid must be between 0 and 1, got {valid}")
+    # Validate the blur parameter
+    if blur is not None and not 0 <= blur <= 1:
+        raise ValueError(f"blur must be between 0 and 1, got {blur}")
     input_directory = Path(input_directory)
     output_directory = Path(output_directory)
 
@@ -62,6 +68,10 @@ def prepare(input_directory: str, output_directory: str, img_size: int = 40, con
         print(f"Validation split: {valid*100:.0f}% validation, {(1-valid)*100:.0f}% training")
     else:
         print("Validation split: disabled (all images to training)")
+    if blur and blur > 0:
+        print(f"Gaussian blur: {blur*100:.1f}% of image size")
+    else:
+        print("Gaussian blur: disabled")
     print()
 
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -106,7 +116,7 @@ def prepare(input_directory: str, output_directory: str, img_size: int = 40, con
         print("-" * 50)
         _finalize_dataset(
             class_mapping, temp_dir_path, output_directory, 
-            class_idxs, original_image_count, img_size, valid
+            class_idxs, original_image_count, img_size, valid, blur
         )
         print("✓ Step 5 completed: Classification dataset ready!")
         print()
@@ -137,7 +147,7 @@ def _setup_directories_and_copy_images(input_directory: Path, temp_dir_path: Pat
         images_names = []
         if folder_directory.is_dir():
             folder_name = folder_directory.name
-            image_files = list(folder_directory.glob("*.jpg"))
+            image_files = list(folder_directory.glob("*.jpg")) + list(folder_directory.glob("*.png"))
             print(f"  Copying {len(image_files)} images from class '{folder_name}'...")
             
             for image_file in image_files:
@@ -149,7 +159,7 @@ def _setup_directories_and_copy_images(input_directory: Path, temp_dir_path: Pat
             class_mapping[folder_name] = images_names
             print(f"    ✓ {len(images_names)} images copied for class '{folder_name}'")
     
-    original_image_count = len(list(images_path.glob("*.jpg"))) + len(list(images_path.glob("*.jpeg")))
+    original_image_count = len(list(images_path.glob("*.jpg"))) + len(list(images_path.glob("*.jpeg"))) + len(list(images_path.glob("*.png")))
     print(f"  Total images in temporary directory: {original_image_count}")
     
     return class_mapping, original_image_count
@@ -165,9 +175,9 @@ def _prepare_model_and_clean_images(temp_dir_path: Path):
     
     # Clean corrupted images
     print("  Checking for corrupted images...")
-    images_before = len(list(images_path.glob("*.jpg")))
+    images_before = len(list(images_path.glob("*.jpg"))) + len(list(images_path.glob("*.png")))
     __delete_corrupted_images(images_path)
-    images_after = len(list(images_path.glob("*.jpg")))
+    images_after = len(list(images_path.glob("*.jpg"))) + len(list(images_path.glob("*.png")))
     deleted_count = images_before - images_after
     print(f"  ✓ Cleaned {deleted_count} corrupted images ({images_after} images remain)")
     
@@ -221,7 +231,7 @@ def _run_yolo_inference(temp_dir_path: Path, weights_path: Path, conf: float):
         print("  ✓ YOLO model loaded successfully")
         
         # Get list of all image files
-        image_files = list(images_path.glob('*.jpg'))
+        image_files = list(images_path.glob('*.jpg')) + list(images_path.glob('*.png'))
         print(f"  Found {len(image_files)} images to process with YOLO")
         
         # Ensure predict directory exists
@@ -288,13 +298,13 @@ def _cleanup_and_process_labels(temp_dir_path: Path, labels_path: Path, class_ma
     images_path = temp_dir_path / "images"
     
     print("  Cleaning up orphaned images and labels...")
-    images_before = len(list(images_path.glob("*.jpg")))
+    images_before = len(list(images_path.glob("*.jpg"))) + len(list(images_path.glob("*.png")))
     labels_before = len(list(labels_path.glob("*.txt")))
     
     __delete_orphaned_images_and_inferences(images_path, labels_path)
     __delete_invalid_txt_files(images_path, labels_path)
     
-    images_after = len(list(images_path.glob("*.jpg")))
+    images_after = len(list(images_path.glob("*.jpg"))) + len(list(images_path.glob("*.png")))
     labels_after = len(list(labels_path.glob("*.txt")))
     
     deleted_images = images_before - images_after
@@ -313,15 +323,16 @@ def _cleanup_and_process_labels(temp_dir_path: Path, labels_path: Path, class_ma
 
 def _finalize_dataset(class_mapping: dict, temp_dir_path: Path, output_directory: Path, 
                      class_idxs: dict, original_image_count: int, img_size: int, 
-                     valid_fraction: float = 0.1):
+                     valid_fraction: float = 0.1, blur: Optional[float] = None):
     """
     Finalizes the dataset by creating cropped classification images and splitting into train/valid sets.
     
     Args:
         valid_fraction: Fraction of data for validation (0.0 to 1.0). 0 = no validation split.
+        blur: Gaussian blur as fraction of image size (0-1). None or 0 means no blur.
     """
     # Split data into train/valid with cropped classification images
-    __classification_split(class_mapping, temp_dir_path, output_directory, img_size, valid_fraction)
+    __classification_split(class_mapping, temp_dir_path, output_directory, img_size, valid_fraction, blur)
     
     # Generate final report
     print("  Generating final statistics...")
@@ -345,11 +356,12 @@ def __delete_corrupted_images(images_path: Path):
     it cannot be opened), the function deletes the corrupted image file.
     """
 
-    for image_file in images_path.glob("*.jpg"):
-        try:
-            Image.open(image_file)
-        except IOError:
-            image_file.unlink()
+    for pattern in ["*.jpg", "*.png"]:
+        for image_file in images_path.glob(pattern):
+            try:
+                Image.open(image_file)
+            except IOError:
+                image_file.unlink()
 
 def __download_file_from_github_release(url, dest_path):
 
@@ -399,13 +411,14 @@ def __delete_orphaned_images_and_inferences(images_path: Path, labels_path: Path
     for txt_file in labels_path.glob("*.txt"):
         image_file_jpg = images_path / (txt_file.stem + ".jpg")
         image_file_jpeg = images_path / (txt_file.stem + ".jpeg")
+        image_file_png = images_path / (txt_file.stem + ".png")
 
-        if not (image_file_jpg.exists() or image_file_jpeg.exists()):
+        if not (image_file_jpg.exists() or image_file_jpeg.exists() or image_file_png.exists()):
             # print(f"Deleting {txt_file.name} - No corresponding image file")
             txt_file.unlink()
             
     label_stems = {txt_file.stem for txt_file in labels_path.glob("*.txt")}
-    image_files = list(images_path.glob("*.jpg")) + list(images_path.glob("*.jpeg"))
+    image_files = list(images_path.glob("*.jpg")) + list(images_path.glob("*.jpeg")) + list(images_path.glob("*.png"))
 
     for image_file in image_files:
         if image_file.stem not in label_stems:
@@ -439,6 +452,7 @@ def __delete_invalid_txt_files(images_path: Path, labels_path: Path):
 
             image_file_jpg = images_path / (txt_file.stem + ".jpg")
             image_file_jpeg = images_path / (txt_file.stem + ".jpeg")
+            image_file_png = images_path / (txt_file.stem + ".png")
 
             if image_file_jpg.exists():
                 image_file_jpg.unlink()
@@ -446,11 +460,14 @@ def __delete_invalid_txt_files(images_path: Path, labels_path: Path):
             elif image_file_jpeg.exists():
                 image_file_jpeg.unlink()
                 # print(f"Deleted corresponding image file: {image_file_jpeg.name}")
+            elif image_file_png.exists():
+                image_file_png.unlink()
+                # print(f"Deleted corresponding image file: {image_file_png.name}")
 
 
 
 
-def __classification_split(class_mapping: dict, temp_dir_path: Path, output_directory: Path, img_size: int, valid_fraction: float = 0.1):
+def __classification_split(class_mapping: dict, temp_dir_path: Path, output_directory: Path, img_size: int, valid_fraction: float = 0.1, blur: Optional[float] = None):
     """
     Splits the data into train and validation sets for classification tasks,
     cropping images according to their YOLO labels but preserving original class structure.
@@ -461,6 +478,7 @@ def __classification_split(class_mapping: dict, temp_dir_path: Path, output_dire
         output_directory (Path): The path to the output directory where train and valid splits will be created.
         img_size (int): The target size for the smallest dimension of cropped images.
         valid_fraction (float): Fraction of data for validation (0.0 to 1.0). 0 = no validation split.
+        blur (float, optional): Gaussian blur as fraction of image size (0-1). None or 0 means no blur.
     """
     images_dir = temp_dir_path / "images"
     labels_dir = temp_dir_path / "predict" / "labels"
@@ -543,6 +561,12 @@ def __classification_split(class_mapping: dict, temp_dir_path: Path, output_dire
                                 y_max = min(img_height, y_max)
                                 
                                 img = img.crop((x_min, y_min, x_max, y_max))
+                
+                # Apply Gaussian blur if specified (blur is fraction of smallest dimension)
+                if blur and blur > 0:
+                    img_width, img_height = img.size
+                    blur_radius = blur * min(img_width, img_height)
+                    img = img.filter(ImageFilter.GaussianBlur(radius=blur_radius))
                 
                 img_width, img_height = img.size
                 if img_width < img_height:
@@ -677,6 +701,6 @@ def count_images_across_splits(output_directory: Path) -> int:
             # Count all images in all class subdirectories
             for class_dir in split_dir.iterdir():
                 if class_dir.is_dir():
-                    total_images += len(list(class_dir.glob("*.jpg"))) + len(list(class_dir.glob("*.jpeg")))
+                    total_images += len(list(class_dir.glob("*.jpg"))) + len(list(class_dir.glob("*.jpeg"))) + len(list(class_dir.glob("*.png")))
 
     return total_images
