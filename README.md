@@ -86,9 +86,12 @@ bplusplus.prepare(
     output_directory=PREPARED_DATA_DIR,
     img_size=640,        # Target image size for training
     conf=0.6,            # Detection confidence threshold (0-1)
-    valid=0.1,  # Validation split ratio (0-1), set to 0 for no validation
+    valid=0.1,           # Validation split ratio (0-1), set to 0 for no validation
+    blur=None,           # Gaussian blur as fraction of image size (0-1), None = disabled
 )
 ```
+
+**Note:** The `blur` parameter applies Gaussian blur before resizing, which can help reduce noise. Values are relative to image size (e.g., `blur=0.01` means 1% of the smallest dimension). Supported image formats: JPG, JPEG, and PNG.
 
 #### Step 3: Train Model
 Train the hierarchical classification model on your prepared data. The model learns to identify family, genus, and species.
@@ -149,10 +152,13 @@ results = bplusplus.inference(
     output_dir=OUTPUT_DIR,
     fps=None,               # None = process all frames
     backbone="resnet50",    # Must match training
+    save_video=True,        # Set to False to skip video rendering (only CSV output)
 )
 
 print(f"Detected {results['tracks']} tracks ({results['confirmed_tracks']} confirmed)")
 ```
+
+**Note:** Set `save_video=False` to skip generating the annotated and debug videos, which speeds up processing when you only need the CSV detection data.
 
 **Custom Detection Configuration:**
 
