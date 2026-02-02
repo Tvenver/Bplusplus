@@ -18,7 +18,7 @@ import requests
 import logging
 
 from .tracker import InsectTracker
-from .insect_detector import (
+from .detector import (
     DEFAULT_DETECTION_CONFIG,
     get_default_config,
     build_detection_params,
@@ -307,7 +307,7 @@ class VideoInferenceProcessor:
     and track-based prediction aggregation.
     """
     
-    def __init__(self, species_list, hierarchical_model_path, params, backbone="resnet50"):
+    def __init__(self, species_list, hierarchical_model_path, params, backbone="resnet50", img_size=60):
         """
         Initialize the processor.
         
@@ -316,7 +316,9 @@ class VideoInferenceProcessor:
             hierarchical_model_path: Path to trained model weights
             params: Detection parameters dict
             backbone: ResNet backbone ('resnet18', 'resnet50', 'resnet101')
+            img_size: Image size for classification (should match training)
         """
+        self.img_size = img_size
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.species_list = species_list
         self.params = params
@@ -354,8 +356,7 @@ class VideoInferenceProcessor:
         self.model.eval()
         
         self.transform = transforms.Compose([
-            transforms.Resize((768, 768)),
-            transforms.CenterCrop(640),
+            transforms.Resize((self.img_size, self.img_size)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
@@ -1080,6 +1081,7 @@ def inference(
     backbone="resnet50",
     crops=False,
     save_video=True,
+    img_size=60,
 ):
     """
     Run inference on a video file.
@@ -1098,6 +1100,7 @@ def inference(
                   If model checkpoint contains backbone info, it will be used instead.
         crops: If True, save cropped frames for each classified track
         save_video: If True, save annotated and debug videos. Defaults to True.
+        img_size: Image size for classification (should match training). Default: 60.
     
     Returns:
         dict: Processing results with output file paths
@@ -1166,6 +1169,7 @@ def inference(
         hierarchical_model_path=hierarchical_model_path,
         params=params,
         backbone=backbone,
+        img_size=img_size,
     )
     
     try:
@@ -1238,6 +1242,8 @@ Output files generated in output directory:
                        help='Save cropped frames for each classified track')
     parser.add_argument('--no-video', action='store_true',
                        help='Skip saving annotated and debug videos')
+    parser.add_argument('--img-size', type=int, default=60,
+                       help='Image size for classification (should match training, default: 60)')
     
     # Detection parameters (override config)
     defaults = DEFAULT_DETECTION_CONFIG
@@ -1315,6 +1321,7 @@ Output files generated in output directory:
         backbone=args.backbone,
         crops=args.crops,
         save_video=not args.no_video,
+        img_size=args.img_size,
     )
     
     if result.get("success"):

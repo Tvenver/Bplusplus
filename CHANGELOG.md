@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.4] - 2025-02-02
+
+### Added
+- **Configurable inference image size**: New `img_size` parameter in `inference()` to match training size (default: 60)
+
+### Changed
+- Renamed `insect_detector.py` to `detector.py` for cleaner module naming
+
+### Fixed
+- **Critical**: Inference now uses correct image size for classification. Previously hardcoded to 768x768 → 640, which caused poor accuracy when training with smaller sizes (e.g., 60px)
+
 ## [2.0.3] - 2025-01-28
 
 ### Added

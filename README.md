@@ -153,6 +153,7 @@ results = bplusplus.inference(
     fps=None,               # None = process all frames
     backbone="resnet50",    # Must match training
     save_video=True,        # Set to False to skip video rendering (only CSV output)
+    img_size=60,            # Must match training
 )
 
 print(f"Detected {results['tracks']} tracks ({results['confirmed_tracks']} confirmed)")

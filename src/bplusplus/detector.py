@@ -1,6 +1,6 @@
 """
-Insect Detection Backend Module
-===============================
+Detection Backend Module
+========================
 
 This module provides motion-based insect detection utilities used by the inference pipeline.
 It is NOT meant to be run directly - use inference.py instead.
