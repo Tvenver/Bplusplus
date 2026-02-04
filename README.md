@@ -134,6 +134,8 @@ results = bplusplus.validate(
 #### Step 5: Run Inference on Video
 Process a video file to detect, classify, and track insects using motion-based detection. The pipeline uses background subtraction (GMM) to detect moving insects, tracks them across frames, and classifies confirmed tracks.
 
+**Note:** The species list and taxonomy are automatically loaded from the model checkpoint, so you don't need to provide them again.
+
 **Output files generated in `output_dir`:**
 - `{video}_annotated.mp4` - Video showing confirmed tracks with classifications
 - `{video}_debug.mp4` - Debug video with motion mask and all detections
@@ -146,13 +148,14 @@ OUTPUT_DIR = Path("./output")
 HIERARCHICAL_MODEL_PATH = TRAINED_MODEL_DIR / "best_multitask.pt"
 
 results = bplusplus.inference(
-    species_list=names,
     hierarchical_model_path=HIERARCHICAL_MODEL_PATH,
     video_path=VIDEO_INPUT_PATH,
     output_dir=OUTPUT_DIR,
+    # species_list=names,   # Optional: override species from checkpoint
     fps=None,               # None = process all frames
     backbone="resnet50",    # Must match training
     save_video=True,        # Set to False to skip video rendering (only CSV output)
+    img_size=60,            # Must match training
 )
 
 print(f"Detected {results['tracks']} tracks ({results['confirmed_tracks']} confirmed)")
@@ -171,7 +174,44 @@ results = bplusplus.inference(
 )
 ```
 
-Download a template config from the [releases page](https://github.com/Tvenver/Bplusplus/releases). Parameters control cohesiveness filtering, shape filtering, tracking behavior, and path topology analysis for confirming insect-like movement.
+Download a template config from the [releases page](https://github.com/Tvenver/Bplusplus/releases).
+
+<details>
+<summary><b>Full Configuration Parameters</b> (click to expand)</summary>
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| **GMM Background Subtractor** | | *Motion detection model* |
+| `gmm_history` | 500 | Frames to build background model |
+| `gmm_var_threshold` | 16 | Variance threshold for foreground detection |
+| **Morphological Filtering** | | *Noise removal* |
+| `morph_kernel_size` | 3 | Morphological kernel size (NxN) |
+| **Cohesiveness** | | *Filters scattered motion (plants) vs compact motion (insects)* |
+| `min_largest_blob_ratio` | 0.80 | Min ratio of largest blob to total motion |
+| `max_num_blobs` | 5 | Max separate blobs allowed in detection |
+| `min_motion_ratio` | 0.15 | Min ratio of motion pixels to bbox area |
+| **Shape** | | *Filters by contour properties* |
+| `min_area` | 200 | Min detection area (px²) |
+| `max_area` | 40000 | Max detection area (px²) |
+| `min_density` | 3.0 | Min area/perimeter ratio |
+| `min_solidity` | 0.55 | Min convex hull fill ratio |
+| **Tracking** | | *Controls track behavior* |
+| `min_displacement` | 50 | Min net movement for confirmation (px) |
+| `min_path_points` | 10 | Min points before path analysis |
+| `max_frame_jump` | 100 | Max jump between frames (px) |
+| `max_lost_frames` | 45 | Frames before lost track deleted (e.g., 45 @ 30fps = 1.5s) |
+| `max_area_change_ratio` | 3.0 | Max area change ratio between frames |
+| **Tracker Matching** | | *Hungarian algorithm cost function* |
+| `tracker_w_dist` | 0.6 | Weight for distance cost (0-1) |
+| `tracker_w_area` | 0.4 | Weight for area cost (0-1) |
+| `tracker_cost_threshold` | 0.3 | Max cost for valid match (0-1) |
+| **Path Topology** | | *Confirms insect-like movement patterns* |
+| `max_revisit_ratio` | 0.30 | Max ratio of revisited positions |
+| `min_progression_ratio` | 0.70 | Min forward progression |
+| `max_directional_variance` | 0.90 | Max heading variance |
+| `revisit_radius` | 50 | Radius (px) for revisit detection |
+
+</details>
 
 ### Customization
 
