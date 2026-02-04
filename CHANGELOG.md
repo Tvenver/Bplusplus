@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.5] - 2025-02-04
+
+### Added
+- **JPEG support**: `prepare()` now fully supports `.jpeg` files in addition to `.jpg` and `.png`
+- **Full detection configuration**: All 24 detection parameters now exposed in `detection_config.yaml` with comprehensive documentation
+
+### Changed
+- **Streamlined inference API**: `species_list` is now optional and automatically loaded from model checkpoint (still can be overridden if needed)
+- **Frame-based tracking**: Standardized on `max_lost_frames` (frame-based) instead of `lost_track_seconds` for consistent behavior across different FPS
+- **Refactored detection modules**: Moved all hardcoded values to `detection_config.yaml` for better configurability
+  - GMM parameters (`gmm_history`, `gmm_var_threshold`)
+  - Morphological filtering (`morph_kernel_size`)
+  - Cohesiveness filters (`min_motion_ratio`)
+  - Track consistency (`max_area_change_ratio`)
+  - Path topology (`revisit_radius`)
+
+### Fixed
+- **Indentation error** in `prepare.py` file corruption detection loop
+
 ## [2.0.4] - 2025-02-02
 
 ### Added

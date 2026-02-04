@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "bplusplus"
-version = "2.0.4"
+version = "2.0.5"
 description = "A simple method to create AI models for biodiversity, with collect and prepare pipeline"
 authors = ["Titus Venverloo <tvenver@mit.edu>", "Deniz Aydemir <deniz@aydemir.us>", "Orlando Closs <orlandocloss@pm.me>", "Ase Hatveit <aase@mit.edu>"]
 license = "MIT"

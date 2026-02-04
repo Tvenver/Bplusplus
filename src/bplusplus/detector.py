@@ -1,62 +1,79 @@
 """
-Detection Backend Module
-========================
+Motion-based detection module.
 
-This module provides motion-based insect detection utilities used by the inference pipeline.
-It is NOT meant to be run directly - use inference.py instead.
+Provides motion detection using GMM background subtraction,
+with shape and cohesiveness filters to identify insects.
 
-Exports:
-    - DEFAULT_DETECTION_CONFIG: Default parameters for detection
-    - build_detection_params(): Build detection params dict
-    - extract_motion_detections(): Extract detections from a frame
-    - Path topology functions for track analysis
+Used by inference.py - not meant to be run directly.
 """
 
 import cv2
 import numpy as np
-from collections import defaultdict
-
-# Support both standalone and package import
-try:
-    from .tracker import InsectTracker
-except ImportError:
-    from tracker import InsectTracker
+from dataclasses import dataclass
+from typing import List, Tuple, Dict, Optional
 
 
-# ============================================================================
+# =============================================================================
+# DATA CLASSES
+# =============================================================================
+
+@dataclass
+class Detection:
+    """Single detection result."""
+    bbox: Tuple[int, int, int, int]  # x1, y1, x2, y2
+    area: float
+    frame_number: int
+
+
+# =============================================================================
 # DEFAULT CONFIGURATION
-# ============================================================================
+# =============================================================================
 
 DEFAULT_DETECTION_CONFIG = {
+    # GMM Background Subtractor parameters
+    "gmm_history": 500,
+    "gmm_var_threshold": 16,
+    
+    # Morphological filtering
+    "morph_kernel_size": 3,
+    
     # Cohesiveness parameters
-    "min_largest_blob_ratio": 0.80,  # Min ratio of largest blob to total motion
-    "max_num_blobs": 5,              # Max blobs in detection region
+    "min_largest_blob_ratio": 0.80,
+    "max_num_blobs": 5,
+    "min_motion_ratio": 0.15,
     
     # Shape parameters
-    "min_area": 200,                 # Min contour area (px²)
-    "max_area": 40000,               # Max contour area (px²)
-    "min_density": 3.0,              # Min area/perimeter ratio
-    "min_solidity": 0.55,            # Min convex hull fill ratio
+    "min_area": 200,
+    "max_area": 40000,
+    "min_density": 3.0,
+    "min_solidity": 0.55,
     
     # Tracking parameters
-    "min_displacement": 50,          # Min NET displacement for confirmation (px)
-    "min_path_points": 10,           # Min path points for analysis
-    "max_frame_jump": 100,           # Max pixels between frames
-    "lost_track_seconds": 1.5,       # Track memory duration (seconds)
+    "min_displacement": 50,
+    "min_path_points": 10,
+    "max_frame_jump": 100,
+    "max_lost_frames": 45,
+    "max_area_change_ratio": 3.0,
+    
+    # Tracker matching parameters
+    "tracker_w_dist": 0.6,
+    "tracker_w_area": 0.4,
+    "tracker_cost_threshold": 0.3,
     
     # Path topology parameters
-    "max_revisit_ratio": 0.30,       # Max revisit ratio (explores new areas)
-    "min_progression_ratio": 0.70,   # Min progression ratio (moves forward)
-    "max_directional_variance": 0.90, # Max directional variance (consistent heading)
+    "max_revisit_ratio": 0.30,
+    "min_progression_ratio": 0.70,
+    "max_directional_variance": 0.90,
+    "revisit_radius": 50,
 }
 
 
-def get_default_config():
+def get_default_config() -> Dict:
     """Return a copy of the default detection configuration."""
     return DEFAULT_DETECTION_CONFIG.copy()
 
 
-def build_detection_params(**kwargs):
+def build_detection_params(**kwargs) -> Dict:
     """
     Build detection parameters dict from defaults + overrides.
     
@@ -75,11 +92,118 @@ def build_detection_params(**kwargs):
     return params
 
 
-# ============================================================================
-# COHESIVENESS ANALYSIS
-# ============================================================================
+# =============================================================================
+# MOTION DETECTOR CLASS
+# =============================================================================
 
-def is_cohesive_blob(fg_mask_region, bbox_area, min_largest_blob_ratio=0.80, max_num_blobs=10):
+class MotionDetector:
+    """
+    Motion-based detector using GMM background subtraction.
+    
+    Detects moving objects and filters by shape/cohesiveness
+    to identify likely insects vs plants/noise.
+    """
+    
+    def __init__(self, params: Dict):
+        """
+        Initialize the motion detector.
+        
+        Args:
+            params: Detection parameters dict
+        """
+        self.params = params
+        
+        # GMM background subtractor
+        self.back_sub = cv2.createBackgroundSubtractorMOG2(
+            history=params.get("gmm_history", 500),
+            varThreshold=params.get("gmm_var_threshold", 16),
+            detectShadows=False
+        )
+        
+        # Morphological kernel for noise removal
+        kernel_size = params.get("morph_kernel_size", 3)
+        self.morph_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    
+    def detect(self, frame: np.ndarray, frame_number: int = 0) -> Tuple[List[Detection], np.ndarray]:
+        """
+        Detect insects in a single frame.
+        
+        Args:
+            frame: BGR image as numpy array
+            frame_number: Current frame index
+            
+        Returns:
+            Tuple of (list of Detection objects, foreground mask)
+        """
+        # Apply background subtraction
+        fg_mask = self.back_sub.apply(frame)
+        fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, self.morph_kernel)
+        fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, self.morph_kernel)
+        
+        # Find contours
+        contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        height, width = frame.shape[:2]
+        detections = []
+        
+        for contour in contours:
+            # Shape filtering
+            if not passes_shape_filters(
+                contour,
+                self.params["min_area"],
+                self.params["max_area"],
+                self.params["min_density"],
+                self.params["min_solidity"]
+            ):
+                continue
+            
+            # Get bounding box
+            x, y, w, h = cv2.boundingRect(contour)
+            
+            # Cohesiveness check
+            region = fg_mask[y:y+h, x:x+w]
+            is_cohesive, _ = is_cohesive_blob(
+                region, w * h,
+                self.params["min_largest_blob_ratio"],
+                self.params["max_num_blobs"],
+                self.params.get("min_motion_ratio", 0.15)
+            )
+            
+            if not is_cohesive:
+                continue
+            
+            # Clamp to frame bounds
+            x1, y1 = max(0, x), max(0, y)
+            x2, y2 = min(width, x + w), min(height, y + h)
+            
+            if x2 <= x1 or y2 <= y1:
+                continue
+            
+            detections.append(Detection(
+                bbox=(x1, y1, x2, y2),
+                area=cv2.contourArea(contour),
+                frame_number=frame_number
+            ))
+        
+        return detections, fg_mask
+    
+    def reset(self) -> None:
+        """Reset the background model."""
+        self.back_sub = cv2.createBackgroundSubtractorMOG2(
+            history=self.params.get("gmm_history", 500),
+            varThreshold=self.params.get("gmm_var_threshold", 16),
+            detectShadows=False
+        )
+
+
+# =============================================================================
+# SHAPE AND COHESIVENESS FILTERS
+# =============================================================================
+
+def is_cohesive_blob(fg_mask_region: np.ndarray, bbox_area: int,
+                     min_largest_blob_ratio: float = 0.80,
+                     max_num_blobs: int = 5,
+                     min_motion_ratio: float = 0.15) -> Tuple[bool, Optional[Dict]]:
     """
     Check if motion in a region is cohesive (insect) vs scattered (plant).
     
@@ -88,6 +212,7 @@ def is_cohesive_blob(fg_mask_region, bbox_area, min_largest_blob_ratio=0.80, max
         bbox_area: Area of bounding box
         min_largest_blob_ratio: Min ratio of largest blob to total motion
         max_num_blobs: Max number of blobs allowed
+        min_motion_ratio: Min ratio of motion pixels to bbox area
         
     Returns:
         tuple: (is_cohesive, metrics_dict or None)
@@ -98,7 +223,7 @@ def is_cohesive_blob(fg_mask_region, bbox_area, min_largest_blob_ratio=0.80, max
         return False, None
     
     motion_ratio = motion_pixels / bbox_area
-    if motion_ratio < 0.15:
+    if motion_ratio < min_motion_ratio:
         return False, None
     
     contours, _ = cv2.findContours(fg_mask_region, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -124,7 +249,8 @@ def is_cohesive_blob(fg_mask_region, bbox_area, min_largest_blob_ratio=0.80, max
     }
 
 
-def passes_shape_filters(contour, min_area=200, max_area=40000, min_density=3.0, min_solidity=0.55):
+def passes_shape_filters(contour, min_area: int = 200, max_area: int = 40000,
+                         min_density: float = 3.0, min_solidity: float = 0.55) -> bool:
     """
     Check if contour passes size and shape filters.
     
@@ -161,13 +287,17 @@ def passes_shape_filters(contour, min_area=200, max_area=40000, min_density=3.0,
     return True
 
 
-# ============================================================================
-# MOTION DETECTION
-# ============================================================================
+# =============================================================================
+# STANDALONE DETECTION FUNCTION (for backwards compatibility)
+# =============================================================================
 
-def extract_motion_detections(frame, back_sub, morph_kernel, params):
+def extract_motion_detections(frame: np.ndarray, back_sub, morph_kernel,
+                              params: Dict) -> Tuple[List[List[int]], np.ndarray]:
     """
     Extract motion-based detections from a frame.
+    
+    This is a standalone function for backwards compatibility.
+    For new code, use MotionDetector class instead.
     
     Args:
         frame: BGR image frame
@@ -202,10 +332,10 @@ def extract_motion_detections(frame, back_sub, morph_kernel, params):
         x, y, w, h = cv2.boundingRect(contour)
         region = fg_mask[y:y + h, x:x + w]
         is_cohesive, _ = is_cohesive_blob(
-            region,
-            w * h,
+            region, w * h,
             params["min_largest_blob_ratio"],
             params["max_num_blobs"],
+            params.get("min_motion_ratio", 0.15),
         )
         if not is_cohesive:
             continue
@@ -220,11 +350,11 @@ def extract_motion_detections(frame, back_sub, morph_kernel, params):
     return valid_detections, fg_mask
 
 
-# ============================================================================
+# =============================================================================
 # PATH TOPOLOGY ANALYSIS
-# ============================================================================
+# =============================================================================
 
-def calculate_revisit_ratio(path, revisit_radius=50):
+def calculate_revisit_ratio(path: np.ndarray, revisit_radius: int = 50) -> float:
     """
     Calculate how much the path revisits previous locations.
     Low ratio = exploring new areas (insect), High ratio = oscillating (plant).
@@ -239,7 +369,7 @@ def calculate_revisit_ratio(path, revisit_radius=50):
     return revisit_count / (max_revisits + 1e-6)
 
 
-def calculate_progression_ratio(path):
+def calculate_progression_ratio(path: np.ndarray) -> float:
     """
     Calculate if path progressively explores outward.
     High ratio = linear progression (insect), Low = backtracking (plant).
@@ -257,7 +387,7 @@ def calculate_progression_ratio(path):
     return net_displacement / (max_progressive + 1e-6)
 
 
-def calculate_directional_variance(path):
+def calculate_directional_variance(path: np.ndarray) -> float:
     """
     Calculate variance in movement direction.
     Low variance = consistent direction (insect), High = random (plant).
@@ -281,7 +411,7 @@ def calculate_directional_variance(path):
     return 1 - np.sqrt(mean_sin**2 + mean_cos**2)
 
 
-def analyze_path_topology(path, params):
+def analyze_path_topology(path: List[Tuple[float, float]], params: Dict) -> Tuple[bool, Dict]:
     """
     Analyze path to determine if it exhibits insect-like movement.
     
@@ -295,12 +425,12 @@ def analyze_path_topology(path, params):
     if len(path) < 3:
         return False, {}
     
-    path = np.array(path)
+    path_arr = np.array(path)
     
-    net_displacement = np.linalg.norm(path[-1] - path[0])
-    revisit_ratio = calculate_revisit_ratio(path)
-    progression_ratio = calculate_progression_ratio(path)
-    directional_variance = calculate_directional_variance(path)
+    net_displacement = float(np.linalg.norm(path_arr[-1] - path_arr[0]))
+    revisit_ratio = calculate_revisit_ratio(path_arr, params.get("revisit_radius", 50))
+    progression_ratio = calculate_progression_ratio(path_arr)
+    directional_variance = calculate_directional_variance(path_arr)
     
     metrics = {
         'net_displacement': net_displacement,
@@ -319,11 +449,13 @@ def analyze_path_topology(path, params):
     return passes, metrics
 
 
-# ============================================================================
-# TRACK MANAGEMENT
-# ============================================================================
+# =============================================================================
+# TRACK CONSISTENCY
+# =============================================================================
 
-def check_track_consistency(prev_pos, curr_pos, prev_area, curr_area, max_frame_jump):
+def check_track_consistency(prev_pos: Tuple[float, float], curr_pos: Tuple[float, float],
+                           prev_area: float, curr_area: float, max_frame_jump: int,
+                           max_area_change_ratio: float = 3.0) -> bool:
     """
     Check if track update is consistent (not a bad match).
     
@@ -333,6 +465,7 @@ def check_track_consistency(prev_pos, curr_pos, prev_area, curr_area, max_frame_
         prev_area: Previous bounding box area
         curr_area: Current bounding box area
         max_frame_jump: Maximum allowed position jump
+        max_area_change_ratio: Maximum allowed area change ratio
         
     Returns:
         bool: True if consistent, False if likely bad match
@@ -342,35 +475,9 @@ def check_track_consistency(prev_pos, curr_pos, prev_area, curr_area, max_frame_
     if frame_jump > max_frame_jump:
         return False
     
-    # Size change check (3x threshold)
+    # Size change check
     area_ratio = max(curr_area, prev_area) / (min(curr_area, prev_area) + 1e-6)
-    if area_ratio > 3.0:
+    if area_ratio > max_area_change_ratio:
         return False
     
     return True
-
-
-def create_tracker(height, width, params):
-    """
-    Create an InsectTracker with parameters from config.
-    
-    Args:
-        height: Frame height
-        width: Frame width
-        params: Detection parameters dict
-    
-    Returns:
-        InsectTracker: Configured tracker instance
-    """
-    # Note: lost_track_seconds needs FPS to convert to frames
-    # This is handled by the caller who knows the FPS
-    return InsectTracker(
-        image_height=height,
-        image_width=width,
-        max_frames=30,  # Will be overridden by caller with FPS info
-        track_memory_frames=30,
-        w_dist=0.6,
-        w_area=0.4,
-        cost_threshold=0.3,
-        debug=False
-    )

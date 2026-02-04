@@ -1,3 +1,25 @@
+"""
+Video inference module for insect detection and classification.
+
+Processes video files through a multi-phase pipeline:
+    1. Detection & Tracking: Motion-based detection with Hungarian tracking
+    2. Topology Analysis: Path analysis to confirm insect-like movement
+    3. Classification: Hierarchical classification of confirmed tracks
+    4. Video Rendering: Annotated output videos (optional)
+
+Usage:
+    from bplusplus import inference
+    result = inference(model_path, video_path, output_dir)
+    
+    # Or via CLI:
+    python -m bplusplus.inference --video input.mp4 --model model.pt \\
+        --output-dir results/
+    
+    # Optionally override species list from checkpoint:
+    python -m bplusplus.inference --video input.mp4 --model model.pt \\
+        --output-dir results/ --species "Apis mellifera" "Bombus terrestris"
+"""
+
 import cv2
 import time
 import os
@@ -5,27 +27,36 @@ import yaml
 import json
 import numpy as np
 import pandas as pd
+import argparse
+import logging
+import uuid
 from datetime import datetime
 from collections import defaultdict
-import uuid
-import argparse
+from dataclasses import dataclass, field
+from typing import List, Dict, Optional, Tuple, Set
 
 import torch
 import torch.nn as nn
 from torchvision import transforms, models
 from PIL import Image
 import requests
-import logging
 
 from .tracker import InsectTracker
 from .detector import (
     DEFAULT_DETECTION_CONFIG,
+    MotionDetector,
     get_default_config,
-    build_detection_params,
-    extract_motion_detections,
     analyze_path_topology,
     check_track_consistency,
 )
+
+
+# =============================================================================
+# LOGGING SETUP
+# =============================================================================
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Torch serialization compatibility
 if hasattr(torch.serialization, 'add_safe_globals'):
@@ -36,15 +67,44 @@ if hasattr(torch.serialization, 'add_safe_globals'):
         'torch.cuda.FloatStorage',
     ])
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+
+# =============================================================================
+# DATA CLASSES
+# =============================================================================
+
+@dataclass
+class Classification:
+    """Hierarchical classification result."""
+    family: str
+    genus: str
+    species: str
+    family_confidence: float
+    genus_confidence: float
+    species_confidence: float
+    family_probs: List[float] = field(default_factory=list)
+    genus_probs: List[float] = field(default_factory=list)
+    species_probs: List[float] = field(default_factory=list)
+    
+    def to_dict(self) -> Dict:
+        """Convert to dictionary."""
+        return {
+            'family': self.family,
+            'genus': self.genus,
+            'species': self.species,
+            'family_confidence': self.family_confidence,
+            'genus_confidence': self.genus_confidence,
+            'species_confidence': self.species_confidence,
+            'family_probs': self.family_probs,
+            'genus_probs': self.genus_probs,
+            'species_probs': self.species_probs,
+        }
 
 
-# ============================================================================
+# =============================================================================
 # CONFIGURATION
-# ============================================================================
+# =============================================================================
 
-def load_config(config_path):
+def load_config(config_path: str) -> Dict:
     """
     Load detection configuration from YAML or JSON file.
     
@@ -52,7 +112,7 @@ def load_config(config_path):
         config_path: Path to config file (.yaml, .yml, or .json)
         
     Returns:
-        dict: Configuration parameters
+        dict: Configuration parameters merged with defaults
     """
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config file not found: {config_path}")
@@ -78,11 +138,11 @@ def load_config(config_path):
     return params
 
 
-# ============================================================================
+# =============================================================================
 # TAXONOMY UTILITIES
-# ============================================================================
+# =============================================================================
 
-def get_taxonomy(species_list):
+def get_taxonomy(species_list: List[str]) -> Tuple[Dict, Dict[str, str], Dict[str, str]]:
     """
     Retrieve taxonomic information from GBIF API.
     
@@ -154,7 +214,7 @@ def get_taxonomy(species_list):
     return taxonomy, species_to_genus, genus_to_family
 
 
-def create_mappings(taxonomy, species_list=None):
+def create_mappings(taxonomy: Dict, species_list: Optional[List[str]] = None) -> Tuple[Dict, Dict]:
     """Create index mappings from taxonomy."""
     level_to_idx = {}
     idx_to_level = {}
@@ -171,14 +231,18 @@ def create_mappings(taxonomy, species_list=None):
     return level_to_idx, idx_to_level
 
 
-# ============================================================================
-# MODEL
-# ============================================================================
+# =============================================================================
+# CLASSIFICATION MODEL
+# =============================================================================
 
 class HierarchicalInsectClassifier(nn.Module):
-    """Hierarchical classifier with ResNet backbone and multi-branch heads."""
+    """
+    Hierarchical classifier with ResNet backbone and multi-branch heads.
     
-    def __init__(self, num_classes_per_level, backbone: str = "resnet50"):
+    Outputs predictions for Family, Genus, and Species levels.
+    """
+    
+    def __init__(self, num_classes_per_level: List[int], backbone: str = "resnet50"):
         super().__init__()
         self.backbone = self._build_backbone(backbone)
         self.backbone_name = backbone
@@ -196,7 +260,7 @@ class HierarchicalInsectClassifier(nn.Module):
         self.num_levels = len(num_classes_per_level)
     
     @staticmethod
-    def _build_backbone(backbone: str):
+    def _build_backbone(backbone: str) -> nn.Module:
         """Build ResNet backbone by name."""
         name = backbone.lower()
         if name == "resnet18":
@@ -207,14 +271,14 @@ class HierarchicalInsectClassifier(nn.Module):
             return models.resnet101(weights=models.ResNet101_Weights.DEFAULT)
         raise ValueError(f"Unsupported backbone '{backbone}'. Choose from 'resnet18', 'resnet50', 'resnet101'.")
         
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
         features = self.backbone(x)
         return [branch(features) for branch in self.branches]
 
 
-# ============================================================================
+# =============================================================================
 # VISUALIZATION
-# ============================================================================
+# =============================================================================
 
 class FrameVisualizer:
     """Visualization utilities for detection overlay."""
@@ -226,7 +290,7 @@ class FrameVisualizer:
     ]
     
     @staticmethod
-    def get_track_color(track_id):
+    def get_track_color(track_id: Optional[str]) -> Tuple[int, int, int]:
         if track_id is None:
             return (68, 189, 50)
         try:
@@ -236,19 +300,19 @@ class FrameVisualizer:
         return FrameVisualizer.COLORS[track_uuid.int % len(FrameVisualizer.COLORS)]
     
     @staticmethod
-    def draw_path(frame, path, track_id):
+    def draw_path(frame: np.ndarray, path: List[Tuple[float, float]], track_id: str) -> None:
         """Draw track path on frame."""
         if len(path) < 2:
             return
         color = FrameVisualizer.get_track_color(track_id)
         path_points = np.array(path, dtype=np.int32)
         cv2.polylines(frame, [path_points], False, color, 2)
-        # Draw center point
         cx, cy = path[-1]
         cv2.circle(frame, (int(cx), int(cy)), 4, color, -1)
     
     @staticmethod
-    def draw_detection(frame, x1, y1, x2, y2, track_id, detection_data):
+    def draw_detection(frame: np.ndarray, x1: int, y1: int, x2: int, y2: int,
+                       track_id: Optional[str], detection_data: Dict) -> None:
         """Draw bounding box and classification label on frame."""
         color = FrameVisualizer.get_track_color(track_id)
         cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
@@ -295,35 +359,64 @@ class FrameVisualizer:
             y += text_h + spacing
 
 
-# ============================================================================
+# =============================================================================
 # VIDEO PROCESSOR
-# ============================================================================
+# =============================================================================
+
+# ImageNet normalization constants
+IMAGENET_MEAN = [0.485, 0.456, 0.406]
+IMAGENET_STD = [0.229, 0.224, 0.225]
+
 
 class VideoInferenceProcessor:
     """
     Processes video frames for insect detection and classification.
     
-    Combines motion-based detection with hierarchical classification
-    and track-based prediction aggregation.
+    Pipeline:
+        1. Motion detection using GMM background subtraction
+        2. Hungarian algorithm tracking
+        3. Path topology analysis for confirmation
+        4. Hierarchical classification of confirmed tracks
     """
     
-    def __init__(self, species_list, hierarchical_model_path, params, backbone="resnet50", img_size=60):
+    def __init__(
+        self,
+        hierarchical_model_path: str,
+        params: Dict,
+        species_list: Optional[List[str]] = None,
+        backbone: str = "resnet50",
+        img_size: int = 60,
+    ):
         """
         Initialize the processor.
         
         Args:
-            species_list: List of species names for classification
             hierarchical_model_path: Path to trained model weights
             params: Detection parameters dict
+            species_list: Optional list of species names (if None, loaded from checkpoint)
             backbone: ResNet backbone ('resnet18', 'resnet50', 'resnet101')
             img_size: Image size for classification (should match training)
         """
         self.img_size = img_size
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.species_list = species_list
         self.params = params
         
         print(f"Using device: {self.device}")
+        
+        # Load classification model checkpoint first
+        print(f"Loading hierarchical model from {hierarchical_model_path}")
+        checkpoint = torch.load(hierarchical_model_path, map_location='cpu')
+        state_dict = checkpoint.get("model_state_dict", checkpoint)
+        
+        # Load species list from checkpoint if not provided
+        if species_list is None:
+            if 'species_list' in checkpoint:
+                species_list = checkpoint['species_list']
+                print(f"Loaded species list from checkpoint: {len(species_list)} species")
+            else:
+                raise ValueError("species_list not found in checkpoint and not provided as argument")
+        
+        self.species_list = species_list
         
         # Build taxonomy
         self.taxonomy, self.species_to_genus, self.genus_to_family = get_taxonomy(species_list)
@@ -331,18 +424,9 @@ class VideoInferenceProcessor:
         self.family_list = sorted(self.taxonomy[1])
         self.genus_list = sorted(self.taxonomy[2].keys())
         
-        # Motion detection setup
-        self.back_sub = cv2.createBackgroundSubtractorMOG2(
-            history=500, varThreshold=16, detectShadows=False
-        )
-        self.morph_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        # Motion detector
+        self._detector = MotionDetector(params)
         
-        # Load classification model
-        print(f"Loading hierarchical model from {hierarchical_model_path}")
-        checkpoint = torch.load(hierarchical_model_path, map_location='cpu')
-        state_dict = checkpoint.get("model_state_dict", checkpoint)
-        
-        # Use backbone from checkpoint if available, otherwise use provided
         model_backbone = checkpoint.get("backbone", backbone)
         if model_backbone != backbone:
             print(f"Note: Using backbone '{model_backbone}' from checkpoint (overrides '{backbone}')")
@@ -358,24 +442,17 @@ class VideoInferenceProcessor:
         self.transform = transforms.Compose([
             transforms.Resize((self.img_size, self.img_size)),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
         ])
         
         # Track state
-        self.all_detections = []
-        self.track_paths = defaultdict(list)
-        self.track_areas = defaultdict(list)
+        self.all_detections: List[Dict] = []
+        self.track_paths: Dict[str, List[Tuple[float, float]]] = defaultdict(list)
+        self.track_areas: Dict[str, List[float]] = defaultdict(list)
         
         print("Processor initialized successfully!")
     
-    def _extract_detections(self, frame):
-        """Extract motion-based detections."""
-        detections, fg_mask = extract_motion_detections(
-            frame, self.back_sub, self.morph_kernel, self.params
-        )
-        return detections, fg_mask
-    
-    def _classify(self, frame, x1, y1, x2, y2):
+    def _classify(self, frame: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> Classification:
         """Classify a detection crop."""
         crop = frame[int(y1):int(y2), int(x1):int(x2)]
         crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
@@ -387,19 +464,20 @@ class VideoInferenceProcessor:
         probs = [torch.softmax(o, dim=1).cpu().numpy().flatten() for o in outputs]
         idxs = [np.argmax(p) for p in probs]
         
-        return {
-            "family": self.family_list[idxs[0]] if idxs[0] < len(self.family_list) else f"Family_{idxs[0]}",
-            "genus": self.genus_list[idxs[1]] if idxs[1] < len(self.genus_list) else f"Genus_{idxs[1]}",
-            "species": self.species_list[idxs[2]] if idxs[2] < len(self.species_list) else f"Species_{idxs[2]}",
-            "family_confidence": float(probs[0][idxs[0]]),
-            "genus_confidence": float(probs[1][idxs[1]]),
-            "species_confidence": float(probs[2][idxs[2]]),
-            "family_probs": probs[0].tolist(),
-            "genus_probs": probs[1].tolist(),
-            "species_probs": probs[2].tolist(),
-        }
+        return Classification(
+            family=self.family_list[idxs[0]] if idxs[0] < len(self.family_list) else f"Family_{idxs[0]}",
+            genus=self.genus_list[idxs[1]] if idxs[1] < len(self.genus_list) else f"Genus_{idxs[1]}",
+            species=self.species_list[idxs[2]] if idxs[2] < len(self.species_list) else f"Species_{idxs[2]}",
+            family_confidence=float(probs[0][idxs[0]]),
+            genus_confidence=float(probs[1][idxs[1]]),
+            species_confidence=float(probs[2][idxs[2]]),
+            family_probs=probs[0].tolist(),
+            genus_probs=probs[1].tolist(),
+            species_probs=probs[2].tolist(),
+        )
     
-    def process_frame(self, frame, frame_time, tracker, frame_number):
+    def process_frame(self, frame: np.ndarray, frame_time: float,
+                      tracker: InsectTracker, frame_number: int) -> Tuple[np.ndarray, List[Dict]]:
         """
         Process a single frame: detect and track only (no classification).
         Classification happens later for confirmed tracks only.
@@ -413,14 +491,18 @@ class VideoInferenceProcessor:
         Returns:
             tuple: (foreground_mask, list of detections with track_ids)
         """
-        detections, fg_mask = self._extract_detections(frame)
-        track_ids = tracker.update(detections, frame_number)
+        # Detect
+        detections, fg_mask = self._detector.detect(frame, frame_number)
+        
+        # Track
+        bboxes = [d.bbox for d in detections]
+        track_ids = tracker.update(bboxes, frame_number)
         
         height, width = frame.shape[:2]
         frame_detections = []
         
         for i, det in enumerate(detections):
-            x1, y1, x2, y2 = det
+            x1, y1, x2, y2 = det.bbox
             track_id = track_ids[i] if i < len(track_ids) else None
             
             # Track consistency check
@@ -434,16 +516,15 @@ class VideoInferenceProcessor:
                     
                     if not check_track_consistency(
                         prev_pos, (cx, cy), prev_area, area, 
-                        self.params["max_frame_jump"]
+                        self.params["max_frame_jump"],
+                        self.params.get("max_area_change_ratio", 3.0)
                     ):
-                        # Reset track
                         self.track_paths[track_id] = []
                         self.track_areas[track_id] = []
                 
                 self.track_paths[track_id].append((cx, cy))
                 self.track_areas[track_id].append(area)
             
-            # Store detection WITHOUT classification
             detection_data = {
                 "timestamp": datetime.now().isoformat(),
                 "frame_number": frame_number,
@@ -458,13 +539,13 @@ class VideoInferenceProcessor:
             self.all_detections.append(detection_data)
             frame_detections.append(detection_data)
             
-            # Log (detection only, no classification yet)
             track_display = str(track_id)[:8] if track_id else "NEW"
             print(f"Frame {frame_time:6.2f}s | Track {track_display} | Detected")
         
         return fg_mask, frame_detections
     
-    def classify_confirmed_tracks(self, video_path, confirmed_track_ids, crops_dir=None):
+    def classify_confirmed_tracks(self, video_path: str, confirmed_track_ids: Set[str],
+                                  crops_dir: Optional[str] = None) -> Dict[str, List[Classification]]:
         """
         Classify only the confirmed tracks by re-reading relevant frames.
         
@@ -482,16 +563,13 @@ class VideoInferenceProcessor:
         
         print(f"\nClassifying {len(confirmed_track_ids)} confirmed tracks...")
         
-        # Setup crops directory if requested
         if crops_dir:
             os.makedirs(crops_dir, exist_ok=True)
-            # Create subdirectory for each track
             for track_id in confirmed_track_ids:
                 track_dir = os.path.join(crops_dir, str(track_id)[:8])
                 os.makedirs(track_dir, exist_ok=True)
             print(f"  Saving crops to: {crops_dir}")
         
-        # Group detections by frame for confirmed tracks
         frames_to_classify = defaultdict(list)
         for det in self.all_detections:
             if det['track_id'] in confirmed_track_ids:
@@ -501,14 +579,13 @@ class VideoInferenceProcessor:
             return {}
         
         cap = cv2.VideoCapture(video_path)
-        track_classifications = defaultdict(list)
+        track_classifications: Dict[str, List[Classification]] = defaultdict(list)
         
         frame_numbers = sorted(frames_to_classify.keys())
         current_frame = 0
         classified_count = 0
         
         for target_frame in frame_numbers:
-            # Seek to frame
             while current_frame < target_frame:
                 cap.read()
                 current_frame += 1
@@ -518,18 +595,14 @@ class VideoInferenceProcessor:
                 break
             current_frame += 1
             
-            # Classify each detection in this frame
             for det in frames_to_classify[target_frame]:
                 x1, y1, x2, y2 = det['bbox']
                 classification = self._classify(frame, x1, y1, x2, y2)
                 
-                # Update detection with classification
-                det.update(classification)
-                
+                det.update(classification.to_dict())
                 track_classifications[det['track_id']].append(classification)
                 classified_count += 1
                 
-                # Save crop if requested
                 if crops_dir:
                     track_id = det['track_id']
                     track_dir = os.path.join(crops_dir, str(track_id)[:8])
@@ -546,11 +619,11 @@ class VideoInferenceProcessor:
         if crops_dir:
             print(f"✓ Saved {classified_count} crops to {crops_dir}")
         
-        return track_classifications
+        return dict(track_classifications)
     
-    def analyze_tracks(self):
+    def analyze_tracks(self) -> Tuple[Set[str], Dict]:
         """
-        Analyze all tracks to determine which pass topology (before classification).
+        Analyze all tracks to determine which pass topology.
         
         Returns:
             tuple: (confirmed_track_ids set, all_track_info dict)
@@ -564,11 +637,10 @@ class VideoInferenceProcessor:
             if det['track_id']:
                 track_detections[det['track_id']].append(det)
         
-        confirmed_track_ids = set()
-        all_track_info = {}
+        confirmed_track_ids: Set[str] = set()
+        all_track_info: Dict = {}
         
         for track_id, detections in track_detections.items():
-            # Path topology analysis
             path = self.track_paths.get(track_id, [])
             passes_topology, topology_metrics = analyze_path_topology(path, self.params)
             
@@ -595,7 +667,7 @@ class VideoInferenceProcessor:
         print(f"\n✓ {len(confirmed_track_ids)} confirmed / {len(track_detections)} total tracks")
         return confirmed_track_ids, all_track_info
     
-    def hierarchical_aggregation(self, confirmed_track_ids):
+    def hierarchical_aggregation(self, confirmed_track_ids: Set[str]) -> List[Dict]:
         """
         Aggregate predictions for confirmed tracks using hierarchical selection.
         Must be called AFTER classify_confirmed_tracks().
@@ -617,14 +689,12 @@ class VideoInferenceProcessor:
         
         results = []
         for track_id, detections in track_detections.items():
-            # Check if classifications exist
             if 'family_probs' not in detections[0]:
                 print(f"Warning: Track {str(track_id)[:8]} has no classifications, skipping")
                 continue
             
             print(f"\nTrack {str(track_id)[:8]}: {len(detections)} classified detections")
             
-            # Path topology analysis
             path = self.track_paths.get(track_id, [])
             passes_topology, topology_metrics = analyze_path_topology(path, self.params)
             
@@ -679,7 +749,7 @@ class VideoInferenceProcessor:
         
         return results
     
-    def save_results(self, results, output_paths):
+    def save_results(self, results: List[Dict], output_paths: Dict) -> pd.DataFrame:
         """
         Save results to CSV and print summary.
         
@@ -688,20 +758,17 @@ class VideoInferenceProcessor:
             output_paths: Dict with output file paths
             
         Returns:
-            pd.DataFrame: Results dataframe (confirmed tracks only)
+            pd.DataFrame: Results dataframe
         """
-        # Count total tracks vs confirmed
         total_tracks = len(self.track_paths)
         num_confirmed = len(results)
         num_unconfirmed = total_tracks - num_confirmed
         
-        # Save confirmed tracks to results CSV
         if results:
             df = pd.DataFrame(results).sort_values('num_detections', ascending=False)
             df.to_csv(output_paths["results_csv"], index=False)
             print(f"\n📊 Confirmed results saved: {output_paths['results_csv']} ({num_confirmed} tracks)")
         else:
-            # Create empty CSV with headers
             df = pd.DataFrame(columns=[
                 'track_id', 'num_detections', 'first_frame_time', 'last_frame_time',
                 'duration', 'final_family', 'final_genus', 'final_species',
@@ -710,14 +777,13 @@ class VideoInferenceProcessor:
                 'progression_ratio', 'directional_variance'
             ])
             df.to_csv(output_paths["results_csv"], index=False)
-            print(f"\n📊 Results file created (empty - no confirmed tracks): {output_paths['results_csv']}")
+            print(f"\n📊 Results file created (empty): {output_paths['results_csv']}")
         
-        # Save all detections (frame-by-frame, regardless of confirmation)
         det_df = pd.DataFrame(self.all_detections)
         det_df.to_csv(output_paths["detections_csv"], index=False)
         print(f"📋 Frame-by-frame detections saved: {output_paths['detections_csv']}")
         
-        # Print summary
+        # Summary
         print("\n" + "="*60)
         print("🐛 FINAL SUMMARY")
         print("="*60)
@@ -733,7 +799,6 @@ class VideoInferenceProcessor:
         
         print(f"\n📈 Total: {total_tracks} tracks ({num_confirmed} confirmed, {num_unconfirmed} unconfirmed)")
         
-        # Bold warning if no confirmed tracks
         if not results:
             print("\n" + "!"*60)
             print("⚠️  WARNING: NO CONFIRMED INSECT TRACKS DETECTED!")
@@ -741,24 +806,24 @@ class VideoInferenceProcessor:
             print("Possible reasons:")
             print("  • No insects present in the video")
             print("  • Detection parameters too strict (try lowering min_area)")
-            print("  • Tracking parameters too strict (try increasing lost_track_seconds)")
+            print("  • Tracking parameters too strict (try increasing max_lost_frames)")
             print("  • Path topology too strict (try lowering min_displacement)")
             print("  • Video quality/resolution issues")
             if num_unconfirmed > 0:
                 print(f"\nNote: {num_unconfirmed} tracks were detected but failed topology check.")
-                print("Consider relaxing path topology parameters if these might be valid insects.")
             print("!"*60)
         
         print("="*60)
-        
         return df
 
 
-# ============================================================================
-# VIDEO PROCESSING
-# ============================================================================
+# =============================================================================
+# VIDEO PROCESSING PIPELINE
+# =============================================================================
 
-def process_video(video_path, processor, output_paths, show_video=False, fps=None, crops_dir=None):
+def process_video(video_path: str, processor: VideoInferenceProcessor,
+                  output_paths: Dict, show_video: bool = False,
+                  fps: Optional[float] = None, crops_dir: Optional[str] = None) -> List[Dict]:
     """
     Process video file with efficient classification (confirmed tracks only).
     
@@ -774,7 +839,7 @@ def process_video(video_path, processor, output_paths, show_video=False, fps=Non
         output_paths: Dict with output file paths
         show_video: Display video while processing
         fps: Target FPS (skip frames if lower than input)
-        crops_dir: Optional directory to save cropped frames for each track
+        crops_dir: Optional directory to save cropped frames
         
     Returns:
         list: Aggregated results
@@ -795,13 +860,17 @@ def process_video(video_path, processor, output_paths, show_video=False, fps=Non
     print(f"Properties: {total_frames} frames, {input_fps:.1f} FPS, {total_frames/input_fps:.1f}s")
     
     # Setup tracker
-    effective_fps = fps if fps and fps > 0 else input_fps if input_fps > 0 else 30
-    track_memory = max(30, int(processor.params["lost_track_seconds"] * effective_fps))
+    max_lost_frames = processor.params.get("max_lost_frames", 45)
     
     tracker = InsectTracker(
-        image_height=height, image_width=width,
-        max_frames=track_memory, track_memory_frames=track_memory,
-        w_dist=0.6, w_area=0.4, cost_threshold=0.3, debug=False
+        image_height=height,
+        image_width=width,
+        max_frames=max_lost_frames,
+        track_memory_frames=max_lost_frames,
+        w_dist=processor.params.get("tracker_w_dist", 0.6),
+        w_area=processor.params.get("tracker_w_area", 0.4),
+        cost_threshold=processor.params.get("tracker_cost_threshold", 0.3),
+        debug=False,
     )
     
     # Frame skip
@@ -809,9 +878,9 @@ def process_video(video_path, processor, output_paths, show_video=False, fps=Non
     if skip_interval > 1:
         print(f"Processing every {skip_interval} frame(s)")
     
-    # ==========================================================================
-    # PHASE 1: Detection & Tracking (no classification)
-    # ==========================================================================
+    # =========================================================================
+    # PHASE 1: Detection & Tracking
+    # =========================================================================
     print("\n" + "="*60)
     print("PHASE 1: DETECTION & TRACKING")
     print("="*60)
@@ -828,7 +897,7 @@ def process_video(video_path, processor, output_paths, show_video=False, fps=Non
         frame_time = frame_num / input_fps if input_fps > 0 else 0
         
         if frame_num % skip_interval == 0:
-            fg_mask, frame_dets = processor.process_frame(frame, frame_time, tracker, frame_num)
+            processor.process_frame(frame, frame_time, tracker, frame_num)
             processed += 1
             
             if processed % 50 == 0:
@@ -842,14 +911,14 @@ def process_video(video_path, processor, output_paths, show_video=False, fps=Non
     print(f"  Total detections: {len(processor.all_detections)}")
     print(f"  Unique tracks: {len(processor.track_paths)}")
     
-    # ==========================================================================
-    # PHASE 2: Topology Analysis (determine confirmed tracks)
-    # ==========================================================================
+    # =========================================================================
+    # PHASE 2: Topology Analysis
+    # =========================================================================
     confirmed_track_ids, all_track_info = processor.analyze_tracks()
     
-    # ==========================================================================
-    # PHASE 3: Classification (confirmed tracks only)
-    # ==========================================================================
+    # =========================================================================
+    # PHASE 3: Classification
+    # =========================================================================
     print("\n" + "="*60)
     print("PHASE 3: CLASSIFICATION (Confirmed Tracks Only)")
     print("="*60)
@@ -860,16 +929,14 @@ def process_video(video_path, processor, output_paths, show_video=False, fps=Non
     else:
         results = []
     
-    # ==========================================================================
+    # =========================================================================
     # PHASE 4: Render Videos
-    # ==========================================================================
-    # Render videos if requested
+    # =========================================================================
     if "annotated_video" in output_paths or "debug_video" in output_paths:
         print("\n" + "="*60)
         print("PHASE 4: RENDERING VIDEOS")
         print("="*60)
         
-        # Render debug video (all detections, showing confirmed vs unconfirmed)
         if "debug_video" in output_paths:
             print(f"\nRendering debug video (all detections)...")
             _render_debug_video(
@@ -877,7 +944,6 @@ def process_video(video_path, processor, output_paths, show_video=False, fps=Non
                 processor, confirmed_track_ids, all_track_info, input_fps
             )
         
-        # Render annotated video (confirmed tracks with classifications)
         if "annotated_video" in output_paths:
             print(f"\nRendering annotated video ({len(confirmed_track_ids)} confirmed tracks)...")
             _render_annotated_video(
@@ -887,31 +953,30 @@ def process_video(video_path, processor, output_paths, show_video=False, fps=Non
     else:
         print("\n(Video rendering skipped)")
     
-    # Save results
     processor.save_results(results, output_paths)
-    
     return results
 
 
-def _render_debug_video(video_path, output_path, processor, confirmed_track_ids, all_track_info, fps):
-    """
-    Render debug video showing all detections with confirmed/unconfirmed status.
-    Shows detection boxes, track IDs, and GMM motion mask side-by-side.
-    """
+# =============================================================================
+# VIDEO RENDERING
+# =============================================================================
+
+def _render_debug_video(video_path: str, output_path: str,
+                        processor: VideoInferenceProcessor, confirmed_track_ids: Set[str],
+                        all_track_info: Dict, fps: float) -> None:
+    """Render debug video showing all detections with confirmed/unconfirmed status."""
     cap = cv2.VideoCapture(video_path)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
-    # Recreate background subtractor for GMM visualization
-    back_sub = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16, detectShadows=False)
-    
-    out = cv2.VideoWriter(
-        output_path,
-        cv2.VideoWriter_fourcc(*'mp4v'),
-        fps, (width * 2, height)
+    back_sub = cv2.createBackgroundSubtractorMOG2(
+        history=processor.params.get("gmm_history", 500),
+        varThreshold=processor.params.get("gmm_var_threshold", 16),
+        detectShadows=False
     )
     
-    # Build frame-to-detections lookup
+    out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width * 2, height))
+    
     frame_detections = defaultdict(list)
     for det in processor.all_detections:
         frame_detections[det['frame_number']].append(det)
@@ -922,51 +987,32 @@ def _render_debug_video(video_path, output_path, processor, confirmed_track_ids,
         if not ret:
             break
         
-        # Get GMM mask
         fg_mask = back_sub.apply(frame)
         fg_display = cv2.cvtColor(fg_mask, cv2.COLOR_GRAY2BGR)
         
-        # Draw all detections with status
         for det in frame_detections[frame_num]:
             x1, y1, x2, y2 = [int(v) for v in det['bbox']]
             track_id = det['track_id']
             
             if track_id in confirmed_track_ids:
-                # Confirmed: Green box, show classification if available
                 color = (0, 255, 0)
-                status = "CONFIRMED"
-                classification = {
-                    'species': det.get('species', ''),
-                    'species_confidence': det.get('species_confidence', 0),
-                }
                 label = f"{str(track_id)[:6]} ✓"
-                if classification['species']:
-                    label += f" {classification['species'][:12]}"
+                if det.get('species'):
+                    label += f" {det['species'][:12]}"
             else:
-                # Unconfirmed: Yellow box
                 color = (0, 255, 255)
-                status = "tracking..."
                 label = f"{str(track_id)[:6] if track_id else 'NEW'}"
             
-            # Draw box
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            
-            # Draw label background
             (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
             cv2.rectangle(frame, (x1, y1 - th - 4), (x1 + tw + 4, y1), color, -1)
-            cv2.putText(frame, label, (x1 + 2, y1 - 2), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
-            
-            # Draw on GMM mask too
+            cv2.putText(frame, label, (x1 + 2, y1 - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
             cv2.rectangle(fg_display, (x1, y1), (x2, y2), color, 2)
         
-        # Add headers
         cv2.putText(frame, f"Frame {frame_num} | Detections (Green=Confirmed, Yellow=Tracking)", 
                    (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        cv2.putText(fg_display, "GMM Motion Mask", 
-                   (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.putText(fg_display, "GMM Motion Mask", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         
-        # Combine side-by-side
         combined = np.hstack((frame, fg_display))
         out.write(combined)
         
@@ -979,40 +1025,31 @@ def _render_debug_video(video_path, output_path, processor, confirmed_track_ids,
     print(f"\n✓ Debug video saved: {output_path}")
 
 
-def _render_annotated_video(video_path, output_path, processor, confirmed_track_ids, fps):
-    """
-    Render annotated video showing only confirmed tracks with classifications.
-    """
-    if not confirmed_track_ids:
-        # Create video with "No confirmed tracks" message
-        cap = cv2.VideoCapture(video_path)
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        
-        out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
-        
-        frame_num = 0
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            cv2.putText(frame, "No confirmed insect tracks", 
-                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            out.write(frame)
-            frame_num += 1
-        
-        cap.release()
-        out.release()
-        print(f"✓ Annotated video saved (no confirmed tracks): {output_path}")
-        return
-    
+def _render_annotated_video(video_path: str, output_path: str,
+                            processor: VideoInferenceProcessor,
+                            confirmed_track_ids: Set[str], fps: float) -> None:
+    """Render annotated video showing only confirmed tracks with classifications."""
     cap = cv2.VideoCapture(video_path)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
     out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
     
-    # Build frame-to-detections lookup for confirmed tracks only
+    if not confirmed_track_ids:
+        frame_num = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            cv2.putText(frame, "No confirmed insect tracks", (10, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            out.write(frame)
+            frame_num += 1
+        cap.release()
+        out.release()
+        print(f"✓ Annotated video saved (no confirmed tracks): {output_path}")
+        return
+    
     frame_detections = defaultdict(list)
     for det in processor.all_detections:
         if det['track_id'] in confirmed_track_ids:
@@ -1024,7 +1061,6 @@ def _render_annotated_video(video_path, output_path, processor, confirmed_track_
         if not ret:
             break
         
-        # Draw paths for confirmed tracks (up to current frame)
         for track_id in confirmed_track_ids:
             path_to_draw = []
             for det in processor.all_detections:
@@ -1037,7 +1073,6 @@ def _render_annotated_video(video_path, output_path, processor, confirmed_track_
             if len(path_to_draw) > 1:
                 FrameVisualizer.draw_path(frame, path_to_draw, track_id)
         
-        # Draw detections for this frame (confirmed tracks only, with classification)
         for det in frame_detections[frame_num]:
             x1, y1, x2, y2 = det['bbox']
             track_id = det['track_id']
@@ -1052,7 +1087,6 @@ def _render_annotated_video(video_path, output_path, processor, confirmed_track_
             }
             FrameVisualizer.draw_detection(frame, x1, y1, x2, y2, track_id, classification)
         
-        # Add header
         cv2.putText(frame, f"Confirmed Insects ({len(confirmed_track_ids)} tracks)", 
                    (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         
@@ -1067,37 +1101,36 @@ def _render_annotated_video(video_path, output_path, processor, confirmed_track_
     print(f"\n✓ Annotated video saved: {output_path}")
 
 
-# ============================================================================
+# =============================================================================
 # MAIN ENTRY POINT
-# ============================================================================
+# =============================================================================
 
 def inference(
-    species_list,
-    hierarchical_model_path,
-    video_path,
-    output_dir,
-    fps=None,
-    config=None,
-    backbone="resnet50",
-    crops=False,
-    save_video=True,
-    img_size=60,
-):
+    hierarchical_model_path: str,
+    video_path: str,
+    output_dir: str,
+    species_list: Optional[List[str]] = None,
+    fps: Optional[float] = None,
+    config: Optional[Dict] = None,
+    backbone: str = "resnet50",
+    crops: bool = False,
+    save_video: bool = True,
+    img_size: int = 60,
+) -> Dict:
     """
     Run inference on a video file.
     
     Args:
-        species_list: List of species names for classification
         hierarchical_model_path: Path to trained model weights
         video_path: Input video path
         output_dir: Output directory for all generated files
+        species_list: Optional list of species names (if None, loaded from checkpoint)
         fps: Target processing FPS (None = use input FPS)
         config: Detection config - can be:
             - None: use defaults
             - str: path to YAML/JSON config file
             - dict: config parameters directly
-        backbone: ResNet backbone ('resnet18', 'resnet50', 'resnet101').
-                  If model checkpoint contains backbone info, it will be used instead.
+        backbone: ResNet backbone ('resnet18', 'resnet50', 'resnet101')
         crops: If True, save cropped frames for each classified track
         save_video: If True, save annotated and debug videos. Defaults to True.
         img_size: Image size for classification (should match training). Default: 60.
@@ -1131,7 +1164,7 @@ def inference(
     else:
         raise ValueError("config must be None, a file path (str), or a dict")
     
-    # Setup output directory and file paths
+    # Setup output paths
     os.makedirs(output_dir, exist_ok=True)
     video_name = os.path.splitext(os.path.basename(video_path))[0]
     
@@ -1144,7 +1177,6 @@ def inference(
         output_paths["annotated_video"] = os.path.join(output_dir, f"{video_name}_annotated.mp4")
         output_paths["debug_video"] = os.path.join(output_dir, f"{video_name}_debug.mp4")
     
-    # Setup crops directory if requested
     crops_dir = os.path.join(output_dir, f"{video_name}_crops") if crops else None
     if crops_dir:
         output_paths["crops_dir"] = crops_dir
@@ -1163,11 +1195,10 @@ def inference(
         print(f"  {key}: {value}")
     print("="*60)
     
-    # Process
     processor = VideoInferenceProcessor(
-        species_list=species_list,
         hierarchical_model_path=hierarchical_model_path,
         params=params,
+        species_list=species_list,
         backbone=backbone,
         img_size=img_size,
     )
@@ -1195,9 +1226,9 @@ def inference(
         return {"error": str(e), "success": False}
 
 
-# ============================================================================
+# =============================================================================
 # COMMAND LINE INTERFACE
-# ============================================================================
+# =============================================================================
 
 def main():
     """Command line interface for inference."""
@@ -1206,13 +1237,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Basic usage
+  # Basic usage (species list loaded from checkpoint)
+  python -m bplusplus.inference --video input.mp4 --model model.pt \\
+      --output-dir results/
+  
+  # Override species list from checkpoint
   python -m bplusplus.inference --video input.mp4 --model model.pt \\
       --output-dir results/ --species "Apis mellifera" "Bombus terrestris"
   
   # With config file
   python -m bplusplus.inference --video input.mp4 --model model.pt \\
-      --output-dir results/ --species "Apis mellifera" --config detection_config.yaml
+      --output-dir results/ --config detection_config.yaml
 
 Output files generated in output directory:
   - {video_name}_annotated.mp4: Video with detection boxes and paths
@@ -1224,10 +1259,10 @@ Output files generated in output directory:
     )
     
     # Required arguments
-    parser.add_argument('--video', '-v', help='Input video path')
-    parser.add_argument('--model', '-m', help='Path to hierarchical model weights')
-    parser.add_argument('--output-dir', '-o', help='Output directory for all generated files')
-    parser.add_argument('--species', '-s', nargs='+', help='List of species names')
+    parser.add_argument('--video', '-v', required=True, help='Input video path')
+    parser.add_argument('--model', '-m', required=True, help='Path to hierarchical model weights')
+    parser.add_argument('--output-dir', '-o', required=True, help='Output directory for all generated files')
+    parser.add_argument('--species', '-s', nargs='+', help='List of species names (optional, loaded from checkpoint if not provided)')
     
     # Config
     parser.add_argument('--config', '-c', help='Path to config file (YAML or JSON)')
@@ -1237,15 +1272,15 @@ Output files generated in output directory:
     parser.add_argument('--show', action='store_true', help='Display video while processing')
     parser.add_argument('--backbone', '-b', default='resnet50',
                        choices=['resnet18', 'resnet50', 'resnet101'],
-                       help='ResNet backbone (default: resnet50, overridden by checkpoint if saved)')
+                       help='ResNet backbone (default: resnet50)')
     parser.add_argument('--crops', action='store_true',
                        help='Save cropped frames for each classified track')
     parser.add_argument('--no-video', action='store_true',
                        help='Skip saving annotated and debug videos')
     parser.add_argument('--img-size', type=int, default=60,
-                       help='Image size for classification (should match training, default: 60)')
+                       help='Image size for classification (default: 60)')
     
-    # Detection parameters (override config)
+    # Detection parameters
     defaults = DEFAULT_DETECTION_CONFIG
     
     cohesive = parser.add_argument_group('Cohesiveness parameters')
@@ -1271,8 +1306,8 @@ Output files generated in output directory:
                          help=f'Min path points (default: {defaults["min_path_points"]})')
     tracking.add_argument('--max-frame-jump', type=int,
                          help=f'Max pixels between frames (default: {defaults["max_frame_jump"]})')
-    tracking.add_argument('--lost-track-seconds', type=float,
-                         help=f'Lost track memory in seconds (default: {defaults["lost_track_seconds"]})')
+    tracking.add_argument('--max-lost-frames', type=int,
+                         help=f'Frames before lost track deleted (default: {defaults["max_lost_frames"]})')
     
     topology = parser.add_argument_group('Path topology parameters')
     topology.add_argument('--max-revisit-ratio', type=float,
@@ -1284,15 +1319,10 @@ Output files generated in output directory:
     
     args = parser.parse_args()
     
-    # Validate required args
-    if not all([args.video, args.model, args.output_dir, args.species]):
-        parser.error("--video, --model, --output-dir, and --species are required")
-    
-    # Build config: start with file if provided, then override with CLI args
+    # Build config
     if args.config:
-        config = args.config  # Pass path, inference() will load it
+        config = args.config
     else:
-        # Build dict from CLI args (only non-None values)
         cli_overrides = {
             "min_largest_blob_ratio": args.min_blob_ratio,
             "max_num_blobs": args.max_num_blobs,
@@ -1303,19 +1333,18 @@ Output files generated in output directory:
             "min_displacement": args.min_displacement,
             "min_path_points": args.min_path_points,
             "max_frame_jump": args.max_frame_jump,
-            "lost_track_seconds": args.lost_track_seconds,
+            "max_lost_frames": args.max_lost_frames,
             "max_revisit_ratio": args.max_revisit_ratio,
             "min_progression_ratio": args.min_progression_ratio,
             "max_directional_variance": args.max_directional_variance,
         }
         config = {k: v for k, v in cli_overrides.items() if v is not None} or None
     
-    # Run inference
     result = inference(
-        species_list=args.species,
         hierarchical_model_path=args.model,
         video_path=args.video,
         output_dir=args.output_dir,
+        species_list=args.species,
         fps=args.fps,
         config=config,
         backbone=args.backbone,

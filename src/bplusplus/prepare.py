@@ -147,7 +147,7 @@ def _setup_directories_and_copy_images(input_directory: Path, temp_dir_path: Pat
         images_names = []
         if folder_directory.is_dir():
             folder_name = folder_directory.name
-            image_files = list(folder_directory.glob("*.jpg")) + list(folder_directory.glob("*.png"))
+            image_files = list(folder_directory.glob("*.jpg")) + list(folder_directory.glob("*.jpeg")) + list(folder_directory.glob("*.png"))
             print(f"  Copying {len(image_files)} images from class '{folder_name}'...")
             
             for image_file in image_files:
@@ -175,9 +175,9 @@ def _prepare_model_and_clean_images(temp_dir_path: Path):
     
     # Clean corrupted images
     print("  Checking for corrupted images...")
-    images_before = len(list(images_path.glob("*.jpg"))) + len(list(images_path.glob("*.png")))
+    images_before = len(list(images_path.glob("*.jpg"))) + len(list(images_path.glob("*.jpeg"))) + len(list(images_path.glob("*.png")))
     __delete_corrupted_images(images_path)
-    images_after = len(list(images_path.glob("*.jpg"))) + len(list(images_path.glob("*.png")))
+    images_after = len(list(images_path.glob("*.jpg"))) + len(list(images_path.glob("*.jpeg"))) + len(list(images_path.glob("*.png")))
     deleted_count = images_before - images_after
     print(f"  ✓ Cleaned {deleted_count} corrupted images ({images_after} images remain)")
     
@@ -231,7 +231,7 @@ def _run_yolo_inference(temp_dir_path: Path, weights_path: Path, conf: float):
         print("  ✓ YOLO model loaded successfully")
         
         # Get list of all image files
-        image_files = list(images_path.glob('*.jpg')) + list(images_path.glob('*.png'))
+        image_files = list(images_path.glob('*.jpg')) + list(images_path.glob('*.jpeg')) + list(images_path.glob('*.png'))
         print(f"  Found {len(image_files)} images to process with YOLO")
         
         # Ensure predict directory exists
@@ -298,13 +298,13 @@ def _cleanup_and_process_labels(temp_dir_path: Path, labels_path: Path, class_ma
     images_path = temp_dir_path / "images"
     
     print("  Cleaning up orphaned images and labels...")
-    images_before = len(list(images_path.glob("*.jpg"))) + len(list(images_path.glob("*.png")))
+    images_before = len(list(images_path.glob("*.jpg"))) + len(list(images_path.glob("*.jpeg"))) + len(list(images_path.glob("*.png")))
     labels_before = len(list(labels_path.glob("*.txt")))
     
     __delete_orphaned_images_and_inferences(images_path, labels_path)
     __delete_invalid_txt_files(images_path, labels_path)
     
-    images_after = len(list(images_path.glob("*.jpg"))) + len(list(images_path.glob("*.png")))
+    images_after = len(list(images_path.glob("*.jpg"))) + len(list(images_path.glob("*.jpeg"))) + len(list(images_path.glob("*.png")))
     labels_after = len(list(labels_path.glob("*.txt")))
     
     deleted_images = images_before - images_after
@@ -356,7 +356,7 @@ def __delete_corrupted_images(images_path: Path):
     it cannot be opened), the function deletes the corrupted image file.
     """
 
-    for pattern in ["*.jpg", "*.png"]:
+    for pattern in ["*.jpg", "*.jpeg", "*.png"]:
         for image_file in images_path.glob(pattern):
             try:
                 Image.open(image_file)
