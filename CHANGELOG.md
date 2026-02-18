@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2025-02-18
+
+### Added
+- **[BugSpot](https://github.com/orlandocloss/bugspot) core library**: Extracted motion detection, tracking, and path topology into standalone package (opencv + numpy + scipy only, no ML frameworks)
+- **Detection-only mode**: `classify=False` skips model loading — outputs NaN for classification fields
+- **Track composite images**: `track_composites=True` generates per-track temporal trail images (lighten blend on darkened background)
+
+### Changed
+- **Inference now depends on bugspot** for detection, tracking, topology analysis, crop extraction, and composite rendering
+- Removed `detector.py` and `tracker.py` from bplusplus — single source of truth in bugspot
+- Consolidated inference documentation in README and notebook into one clean section
+- `video_path` and `output_dir` are now the first two parameters in `inference()`
+
 ## [2.0.5] - 2025-02-04
 
 ### Added

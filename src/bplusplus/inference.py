@@ -41,8 +41,8 @@ from torchvision import transforms, models
 from PIL import Image
 import requests
 
-from .tracker import InsectTracker
-from .detector import (
+from bugspot import (
+    InsectTracker,
     DEFAULT_DETECTION_CONFIG,
     MotionDetector,
     get_default_config,
@@ -381,74 +381,89 @@ class VideoInferenceProcessor:
     
     def __init__(
         self,
-        hierarchical_model_path: str,
         params: Dict,
+        hierarchical_model_path: Optional[str] = None,
         species_list: Optional[List[str]] = None,
         backbone: str = "resnet50",
         img_size: int = 60,
+        classify: bool = True,
     ):
         """
         Initialize the processor.
         
         Args:
-            hierarchical_model_path: Path to trained model weights
             params: Detection parameters dict
+            hierarchical_model_path: Path to trained model weights (required if classify=True)
             species_list: Optional list of species names (if None, loaded from checkpoint)
             backbone: ResNet backbone ('resnet18', 'resnet50', 'resnet101')
             img_size: Image size for classification (should match training)
+            classify: If True, load model and classify confirmed tracks. If False, detection only.
         """
         self.img_size = img_size
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.params = params
+        self.classify = classify
         
-        print(f"Using device: {self.device}")
-        
-        # Load classification model checkpoint first
-        print(f"Loading hierarchical model from {hierarchical_model_path}")
-        checkpoint = torch.load(hierarchical_model_path, map_location='cpu')
-        state_dict = checkpoint.get("model_state_dict", checkpoint)
-        
-        # Load species list from checkpoint if not provided
-        if species_list is None:
-            if 'species_list' in checkpoint:
-                species_list = checkpoint['species_list']
-                print(f"Loaded species list from checkpoint: {len(species_list)} species")
-            else:
-                raise ValueError("species_list not found in checkpoint and not provided as argument")
-        
-        self.species_list = species_list
-        
-        # Build taxonomy
-        self.taxonomy, self.species_to_genus, self.genus_to_family = get_taxonomy(species_list)
-        self.level_to_idx, self.idx_to_level = create_mappings(self.taxonomy, species_list)
-        self.family_list = sorted(self.taxonomy[1])
-        self.genus_list = sorted(self.taxonomy[2].keys())
-        
-        # Motion detector
+        # Motion detector (always needed)
         self._detector = MotionDetector(params)
-        
-        model_backbone = checkpoint.get("backbone", backbone)
-        if model_backbone != backbone:
-            print(f"Note: Using backbone '{model_backbone}' from checkpoint (overrides '{backbone}')")
-        
-        num_classes = [len(self.family_list), len(self.genus_list), len(self.species_list)]
-        print(f"Model architecture: {num_classes} classes per level, backbone: {model_backbone}")
-        
-        self.model = HierarchicalInsectClassifier(num_classes, backbone=model_backbone)
-        self.model.load_state_dict(state_dict, strict=False)
-        self.model.to(self.device)
-        self.model.eval()
-        
-        self.transform = transforms.Compose([
-            transforms.Resize((self.img_size, self.img_size)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
-        ])
         
         # Track state
         self.all_detections: List[Dict] = []
         self.track_paths: Dict[str, List[Tuple[float, float]]] = defaultdict(list)
         self.track_areas: Dict[str, List[float]] = defaultdict(list)
+        
+        # Classification model (only if classify=True)
+        if classify:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            print(f"Using device: {self.device}")
+            
+            if hierarchical_model_path is None:
+                raise ValueError("hierarchical_model_path is required when classify=True")
+            
+            print(f"Loading hierarchical model from {hierarchical_model_path}")
+            checkpoint = torch.load(hierarchical_model_path, map_location='cpu')
+            state_dict = checkpoint.get("model_state_dict", checkpoint)
+            
+            # Load species list from checkpoint if not provided
+            if species_list is None:
+                if 'species_list' in checkpoint:
+                    species_list = checkpoint['species_list']
+                    print(f"Loaded species list from checkpoint: {len(species_list)} species")
+                else:
+                    raise ValueError("species_list not found in checkpoint and not provided as argument")
+            
+            self.species_list = species_list
+            
+            # Build taxonomy
+            self.taxonomy, self.species_to_genus, self.genus_to_family = get_taxonomy(species_list)
+            self.level_to_idx, self.idx_to_level = create_mappings(self.taxonomy, species_list)
+            self.family_list = sorted(self.taxonomy[1])
+            self.genus_list = sorted(self.taxonomy[2].keys())
+            
+            model_backbone = checkpoint.get("backbone", backbone)
+            if model_backbone != backbone:
+                print(f"Note: Using backbone '{model_backbone}' from checkpoint (overrides '{backbone}')")
+            
+            num_classes = [len(self.family_list), len(self.genus_list), len(self.species_list)]
+            print(f"Model architecture: {num_classes} classes per level, backbone: {model_backbone}")
+            
+            self.model = HierarchicalInsectClassifier(num_classes, backbone=model_backbone)
+            self.model.load_state_dict(state_dict, strict=False)
+            self.model.to(self.device)
+            self.model.eval()
+            
+            self.transform = transforms.Compose([
+                transforms.Resize((self.img_size, self.img_size)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
+            ])
+        else:
+            print("Detection-only mode (no classification)")
+            self.species_list = []
+            self.family_list = []
+            self.genus_list = []
+            self.taxonomy = {}
+            self.species_to_genus = {}
+            self.genus_to_family = {}
         
         print("Processor initialized successfully!")
     
@@ -667,6 +682,55 @@ class VideoInferenceProcessor:
         print(f"\n✓ {len(confirmed_track_ids)} confirmed / {len(track_detections)} total tracks")
         return confirmed_track_ids, all_track_info
     
+    def detection_only_results(self, confirmed_track_ids: Set[str]) -> List[Dict]:
+        """
+        Generate results for detection-only mode (no classification).
+        All classification fields are set to NaN.
+        
+        Args:
+            confirmed_track_ids: Set of confirmed track IDs
+            
+        Returns:
+            list: Results with NaN classification fields
+        """
+        print("\n" + "="*60)
+        print("DETECTION-ONLY RESULTS (No Classification)")
+        print("="*60)
+        
+        track_detections = defaultdict(list)
+        for det in self.all_detections:
+            if det['track_id'] in confirmed_track_ids:
+                track_detections[det['track_id']].append(det)
+        
+        results = []
+        for track_id, detections in track_detections.items():
+            path = self.track_paths.get(track_id, [])
+            passes_topology, topology_metrics = analyze_path_topology(path, self.params)
+            
+            frame_times = [d['frame_time_seconds'] for d in detections]
+            
+            result = {
+                'track_id': track_id,
+                'num_detections': len(detections),
+                'first_frame_time': min(frame_times),
+                'last_frame_time': max(frame_times),
+                'duration': max(frame_times) - min(frame_times),
+                'final_family': float('nan'),
+                'final_genus': float('nan'),
+                'final_species': float('nan'),
+                'family_confidence': float('nan'),
+                'genus_confidence': float('nan'),
+                'species_confidence': float('nan'),
+                'passes_topology': passes_topology,
+                **topology_metrics
+            }
+            results.append(result)
+            
+            print(f"Track {str(track_id)[:8]}: {len(detections)} detections, "
+                  f"{result['duration']:.1f}s")
+        
+        return results
+    
     def hierarchical_aggregation(self, confirmed_track_ids: Set[str]) -> List[Dict]:
         """
         Aggregate predictions for confirmed tracks using hierarchical selection.
@@ -865,12 +929,10 @@ def process_video(video_path: str, processor: VideoInferenceProcessor,
     tracker = InsectTracker(
         image_height=height,
         image_width=width,
-        max_frames=max_lost_frames,
-        track_memory_frames=max_lost_frames,
+        max_lost_frames=max_lost_frames,
         w_dist=processor.params.get("tracker_w_dist", 0.6),
         w_area=processor.params.get("tracker_w_area", 0.4),
         cost_threshold=processor.params.get("tracker_cost_threshold", 0.3),
-        debug=False,
     )
     
     # Frame skip
@@ -917,24 +979,33 @@ def process_video(video_path: str, processor: VideoInferenceProcessor,
     confirmed_track_ids, all_track_info = processor.analyze_tracks()
     
     # =========================================================================
-    # PHASE 3: Classification
+    # PHASE 3: Classification (or detection-only)
     # =========================================================================
-    print("\n" + "="*60)
-    print("PHASE 3: CLASSIFICATION (Confirmed Tracks Only)")
-    print("="*60)
-    
-    if confirmed_track_ids:
-        processor.classify_confirmed_tracks(video_path, confirmed_track_ids, crops_dir=crops_dir)
-        results = processor.hierarchical_aggregation(confirmed_track_ids)
-    else:
-        results = []
-    
-    # =========================================================================
-    # PHASE 4: Render Videos
-    # =========================================================================
-    if "annotated_video" in output_paths or "debug_video" in output_paths:
+    if processor.classify:
         print("\n" + "="*60)
-        print("PHASE 4: RENDERING VIDEOS")
+        print("PHASE 3: CLASSIFICATION (Confirmed Tracks Only)")
+        print("="*60)
+        
+        if confirmed_track_ids:
+            processor.classify_confirmed_tracks(video_path, confirmed_track_ids, crops_dir=crops_dir)
+            results = processor.hierarchical_aggregation(confirmed_track_ids)
+        else:
+            results = []
+    else:
+        if confirmed_track_ids:
+            results = processor.detection_only_results(confirmed_track_ids)
+        else:
+            results = []
+    
+    # =========================================================================
+    # PHASE 4: Render Videos & Track Composites
+    # =========================================================================
+    has_video = "annotated_video" in output_paths or "debug_video" in output_paths
+    has_composites = "track_composites_dir" in output_paths
+    
+    if has_video or has_composites:
+        print("\n" + "="*60)
+        print("PHASE 4: RENDERING OUTPUT")
         print("="*60)
         
         if "debug_video" in output_paths:
@@ -949,6 +1020,13 @@ def process_video(video_path: str, processor: VideoInferenceProcessor,
             _render_annotated_video(
                 video_path, output_paths["annotated_video"],
                 processor, confirmed_track_ids, input_fps
+            )
+        
+        if has_composites:
+            print(f"\nRendering track composite images...")
+            _render_track_composites(
+                video_path, output_paths["track_composites_dir"],
+                processor, confirmed_track_ids
             )
     else:
         print("\n(Video rendering skipped)")
@@ -1102,13 +1180,38 @@ def _render_annotated_video(video_path: str, output_path: str,
 
 
 # =============================================================================
+# TRACK COMPOSITE IMAGES (delegates to bugspot)
+# =============================================================================
+
+def _render_track_composites(video_path: str, output_dir: str,
+                             processor: VideoInferenceProcessor,
+                             confirmed_track_ids: Set[str]) -> None:
+    """Render composite images using bugspot pipeline."""
+    from bugspot.pipeline import DetectionPipeline
+    
+    if not confirmed_track_ids:
+        print("No confirmed tracks for composite rendering.")
+        return
+    
+    # Create a temporary pipeline just for rendering composites
+    # (reuse processor's detection data and track paths)
+    tmp = DetectionPipeline.__new__(DetectionPipeline)
+    tmp.all_detections = processor.all_detections
+    tmp.track_paths = processor.track_paths
+    tmp.config = processor.params
+    
+    composites = tmp._render_composites(video_path, confirmed_track_ids, save_dir=output_dir)
+    print(f"✓ Saved {len(composites)} track composite images to: {output_dir}")
+
+
+# =============================================================================
 # MAIN ENTRY POINT
 # =============================================================================
 
 def inference(
-    hierarchical_model_path: str,
     video_path: str,
     output_dir: str,
+    hierarchical_model_path: Optional[str] = None,
     species_list: Optional[List[str]] = None,
     fps: Optional[float] = None,
     config: Optional[Dict] = None,
@@ -1116,14 +1219,16 @@ def inference(
     crops: bool = False,
     save_video: bool = True,
     img_size: int = 60,
+    classify: bool = True,
+    track_composites: bool = False,
 ) -> Dict:
     """
     Run inference on a video file.
     
     Args:
-        hierarchical_model_path: Path to trained model weights
         video_path: Input video path
         output_dir: Output directory for all generated files
+        hierarchical_model_path: Path to trained model weights (required if classify=True)
         species_list: Optional list of species names (if None, loaded from checkpoint)
         fps: Target processing FPS (None = use input FPS)
         config: Detection config - can be:
@@ -1134,6 +1239,8 @@ def inference(
         crops: If True, save cropped frames for each classified track
         save_video: If True, save annotated and debug videos. Defaults to True.
         img_size: Image size for classification (should match training). Default: 60.
+        classify: If True, classify confirmed tracks. If False, detection only (NaN for classification).
+        track_composites: If True, save composite images showing each track's movement over time.
     
     Returns:
         dict: Processing results with output file paths
@@ -1144,10 +1251,14 @@ def inference(
         - {video_name}_results.csv: Aggregated track results
         - {video_name}_detections.csv: Frame-by-frame detections
         - {video_name}_crops/ (if crops=True): Directory with cropped frames per track
+        - {video_name}_composites/ (if track_composites=True): Composite images per track
     """
     if not os.path.exists(video_path):
         print(f"Error: Video not found: {video_path}")
         return {"error": f"Video not found: {video_path}", "success": False}
+    
+    if classify and hierarchical_model_path is None:
+        return {"error": "hierarchical_model_path is required when classify=True", "success": False}
     
     # Build parameters from config
     if config is None:
@@ -1181,11 +1292,16 @@ def inference(
     if crops_dir:
         output_paths["crops_dir"] = crops_dir
     
+    if track_composites:
+        output_paths["track_composites_dir"] = os.path.join(output_dir, f"{video_name}_composites")
+    
     print("\n" + "="*60)
     print("BPLUSPLUS INFERENCE")
     print("="*60)
     print(f"Video: {video_path}")
-    print(f"Model: {hierarchical_model_path}")
+    print(f"Mode: {'Detection + Classification' if classify else 'Detection only'}")
+    if classify:
+        print(f"Model: {hierarchical_model_path}")
     print(f"Output directory: {output_dir}")
     print("\nOutput files:")
     for name, path in output_paths.items():
@@ -1196,11 +1312,12 @@ def inference(
     print("="*60)
     
     processor = VideoInferenceProcessor(
-        hierarchical_model_path=hierarchical_model_path,
         params=params,
+        hierarchical_model_path=hierarchical_model_path,
         species_list=species_list,
         backbone=backbone,
         img_size=img_size,
+        classify=classify,
     )
     
     try:
@@ -1260,7 +1377,7 @@ Output files generated in output directory:
     
     # Required arguments
     parser.add_argument('--video', '-v', required=True, help='Input video path')
-    parser.add_argument('--model', '-m', required=True, help='Path to hierarchical model weights')
+    parser.add_argument('--model', '-m', help='Path to hierarchical model weights (required unless --no-classify)')
     parser.add_argument('--output-dir', '-o', required=True, help='Output directory for all generated files')
     parser.add_argument('--species', '-s', nargs='+', help='List of species names (optional, loaded from checkpoint if not provided)')
     
@@ -1279,6 +1396,10 @@ Output files generated in output directory:
                        help='Skip saving annotated and debug videos')
     parser.add_argument('--img-size', type=int, default=60,
                        help='Image size for classification (default: 60)')
+    parser.add_argument('--no-classify', action='store_true',
+                       help='Detection only - skip classification (NaN for species)')
+    parser.add_argument('--track-composites', action='store_true',
+                       help='Save composite images showing each track over time')
     
     # Detection parameters
     defaults = DEFAULT_DETECTION_CONFIG
@@ -1340,10 +1461,12 @@ Output files generated in output directory:
         }
         config = {k: v for k, v in cli_overrides.items() if v is not None} or None
     
+    classify = not args.no_classify
+    
     result = inference(
-        hierarchical_model_path=args.model,
         video_path=args.video,
         output_dir=args.output_dir,
+        hierarchical_model_path=args.model if classify else None,
         species_list=args.species,
         fps=args.fps,
         config=config,
@@ -1351,6 +1474,8 @@ Output files generated in output directory:
         crops=args.crops,
         save_video=not args.no_video,
         img_size=args.img_size,
+        classify=classify,
+        track_composites=args.track_composites,
     )
     
     if result.get("success"):

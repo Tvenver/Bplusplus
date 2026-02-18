@@ -18,6 +18,7 @@ Using the `Bplusplus` library, this pipeline automates the entire machine learni
 - **Intelligent Data Preparation**: Uses a pre-trained model to automatically find, crop, and resize insects from raw images, ensuring high-quality training data.
 - **Hierarchical Classification**: Trains a model to identify insects at three taxonomic levels: **family, genus, and species**.
 - **Video Inference & Tracking**: Processes video files to detect, classify, and track individual insects over time, providing aggregated predictions.
+
 ## Pipeline Overview
 
 The process is broken down into five main steps, all detailed in the `full_pipeline.ipynb` notebook:
@@ -132,49 +133,45 @@ results = bplusplus.validate(
 ```
 
 #### Step 5: Run Inference on Video
-Process a video file to detect, classify, and track insects using motion-based detection. The pipeline uses background subtraction (GMM) to detect moving insects, tracks them across frames, and classifies confirmed tracks.
 
-**Note:** The species list and taxonomy are automatically loaded from the model checkpoint, so you don't need to provide them again.
+Processes a video through a multi-phase pipeline: motion-based detection (GMM), Hungarian tracking, path topology confirmation, and hierarchical classification. Detection and tracking are powered by [BugSpot](bugspot/), a lightweight core that runs on any platform including edge devices.
 
-**Output files generated in `output_dir`:**
-- `{video}_annotated.mp4` - Video showing confirmed tracks with classifications
-- `{video}_debug.mp4` - Debug video with motion mask and all detections
-- `{video}_results.csv` - Aggregated results per confirmed track
-- `{video}_detections.csv` - Frame-by-frame detection data
+The species list is automatically loaded from the model checkpoint.
 
 ```python
-VIDEO_INPUT_PATH = Path("my_video.mp4")
-OUTPUT_DIR = Path("./output")
 HIERARCHICAL_MODEL_PATH = TRAINED_MODEL_DIR / "best_multitask.pt"
 
 results = bplusplus.inference(
+    video_path="my_video.mp4",
+    output_dir="./output",
     hierarchical_model_path=HIERARCHICAL_MODEL_PATH,
-    video_path=VIDEO_INPUT_PATH,
-    output_dir=OUTPUT_DIR,
-    # species_list=names,   # Optional: override species from checkpoint
-    fps=None,               # None = process all frames
-    backbone="resnet50",    # Must match training
-    save_video=True,        # Set to False to skip video rendering (only CSV output)
-    img_size=60,            # Must match training
+    backbone="resnet50",        # Must match training
+    img_size=60,                # Must match training
+    # --- Optional ---
+    # species_list=names,       # Override species from checkpoint
+    # fps=None,                 # None = all frames, or set target FPS
+    # config="config.yaml",     # Custom detection parameters (YAML/JSON)
+    # classify=False,           # Detection only, NaN for classification
+    # save_video=True,          # Annotated + debug videos
+    # crops=False,              # Save crop per detection per track
+    # track_composites=False,   # Composite image per track (temporal trail)
 )
 
-print(f"Detected {results['tracks']} tracks ({results['confirmed_tracks']} confirmed)")
+print(f"Confirmed: {results['confirmed_tracks']} / {results['tracks']} tracks")
 ```
 
-**Note:** Set `save_video=False` to skip generating the annotated and debug videos, which speeds up processing when you only need the CSV detection data.
+**Output files:**
 
-**Custom Detection Configuration:**
+| File | Description | Flag |
+|------|-------------|------|
+| `{video}_results.csv` | Aggregated results per confirmed track | Always |
+| `{video}_detections.csv` | Frame-by-frame detections | Always |
+| `{video}_annotated.mp4` | Video with detection boxes and paths | `save_video=True` |
+| `{video}_debug.mp4` | Side-by-side with GMM motion mask | `save_video=True` |
+| `{video}_crops/` | Crop images per track | `crops=True` |
+| `{video}_composites/` | Composite images per track | `track_composites=True` |
 
-For advanced control over detection parameters, provide a YAML config file:
-
-```python
-results = bplusplus.inference(
-    ...,
-    config="detection_config.yaml"
-)
-```
-
-Download a template config from the [releases page](https://github.com/Tvenver/Bplusplus/releases).
+**Detection configuration** can be customized via a YAML/JSON file passed as `config=`. Download a template from the [releases page](https://github.com/Tvenver/Bplusplus/releases).
 
 <details>
 <summary><b>Full Configuration Parameters</b> (click to expand)</summary>
