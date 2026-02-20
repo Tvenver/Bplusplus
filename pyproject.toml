@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "bplusplus"
-version = "2.1.0"
+version = "2.1.1"
 description = "A simple method to create AI models for biodiversity, with collect and prepare pipeline"
 authors = ["Titus Venverloo <tvenver@mit.edu>", "Deniz Aydemir <deniz@aydemir.us>", "Orlando Closs <orlandocloss@pm.me>", "Ase Hatveit <aase@mit.edu>"]
 license = "MIT"
@@ -8,13 +8,13 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.10"
+bugspot = ">=0.1.0"
 requests = "2.25.1"
 pandas = "2.1.4"
 ultralytics = "8.3.173"
 pyyaml = "6.0.1"
 tqdm = "4.66.4"
 prettytable = "3.7.0"
-bugspot = {git = "https://github.com/orlandocloss/bugspot.git"}
 # Pillow with platform-specific compatibility
 pillow = [
     # Windows - stable version
