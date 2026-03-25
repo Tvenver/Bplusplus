@@ -432,7 +432,7 @@ class VideoInferenceProcessor:
                     raise ValueError("species_list not found in checkpoint and not provided as argument")
             
             self.species_list = species_list
-            
+        
             # Build taxonomy
             self.taxonomy, self.species_to_genus, self.genus_to_family = get_taxonomy(species_list)
             self.level_to_idx, self.idx_to_level = create_mappings(self.taxonomy, species_list)
@@ -520,7 +520,9 @@ class VideoInferenceProcessor:
             x1, y1, x2, y2 = det.bbox
             track_id = track_ids[i] if i < len(track_ids) else None
             
-            # Track consistency check
+            # Per-frame consistency check: ignore this frame if it
+            # jumps too far or changes size too drastically.
+            # The track keeps its last good position as reference.
             if track_id:
                 cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
                 area = (x2 - x1) * (y2 - y1)
@@ -534,8 +536,7 @@ class VideoInferenceProcessor:
                         self.params["max_frame_jump"],
                         self.params.get("max_area_change_ratio", 3.0)
                     ):
-                        self.track_paths[track_id] = []
-                        self.track_areas[track_id] = []
+                        continue
                 
                 self.track_paths[track_id].append((cx, cy))
                 self.track_areas[track_id].append(area)
@@ -635,6 +636,68 @@ class VideoInferenceProcessor:
             print(f"✓ Saved {classified_count} crops to {crops_dir}")
         
         return dict(track_classifications)
+    
+    def save_crops(self, video_path: str, confirmed_track_ids: Set[str],
+                   crops_dir: str) -> int:
+        """
+        Save cropped detection frames for confirmed tracks (no classification needed).
+        
+        Args:
+            video_path: Path to original video
+            confirmed_track_ids: Set of track IDs that passed topology analysis
+            crops_dir: Directory to save cropped frames
+            
+        Returns:
+            int: Number of crops saved
+        """
+        if not confirmed_track_ids:
+            print("No confirmed tracks for crop saving.")
+            return 0
+        
+        os.makedirs(crops_dir, exist_ok=True)
+        for track_id in confirmed_track_ids:
+            track_dir = os.path.join(crops_dir, str(track_id)[:8])
+            os.makedirs(track_dir, exist_ok=True)
+        
+        frames_to_crop = defaultdict(list)
+        for det in self.all_detections:
+            if det['track_id'] in confirmed_track_ids:
+                frames_to_crop[det['frame_number']].append(det)
+        
+        if not frames_to_crop:
+            return 0
+        
+        cap = cv2.VideoCapture(video_path)
+        frame_numbers = sorted(frames_to_crop.keys())
+        current_frame = 0
+        saved_count = 0
+        
+        for target_frame in frame_numbers:
+            while current_frame < target_frame:
+                cap.read()
+                current_frame += 1
+            
+            ret, frame = cap.read()
+            if not ret:
+                break
+            current_frame += 1
+            
+            for det in frames_to_crop[target_frame]:
+                x1, y1, x2, y2 = det['bbox']
+                track_id = det['track_id']
+                track_dir = os.path.join(crops_dir, str(track_id)[:8])
+                crop = frame[int(y1):int(y2), int(x1):int(x2)]
+                if crop.size > 0:
+                    crop_path = os.path.join(track_dir, f"frame_{target_frame:06d}.jpg")
+                    cv2.imwrite(crop_path, crop)
+                    saved_count += 1
+                
+                if saved_count % 20 == 0:
+                    print(f"  Saved {saved_count} crops...", end='\r')
+        
+        cap.release()
+        print(f"\n✓ Saved {saved_count} crops to {crops_dir}")
+        return saved_count
     
     def analyze_tracks(self) -> Tuple[Set[str], Dict]:
         """
@@ -930,6 +993,7 @@ def process_video(video_path: str, processor: VideoInferenceProcessor,
         image_height=height,
         image_width=width,
         max_lost_frames=max_lost_frames,
+        max_frame_jump=processor.params.get("max_frame_jump"),
         w_dist=processor.params.get("tracker_w_dist", 0.6),
         w_area=processor.params.get("tracker_w_area", 0.4),
         cost_threshold=processor.params.get("tracker_cost_threshold", 0.3),
@@ -994,6 +1058,8 @@ def process_video(video_path: str, processor: VideoInferenceProcessor,
     else:
         if confirmed_track_ids:
             results = processor.detection_only_results(confirmed_track_ids)
+            if crops_dir:
+                processor.save_crops(video_path, confirmed_track_ids, crops_dir)
         else:
             results = []
     
@@ -1056,8 +1122,13 @@ def _render_debug_video(video_path: str, output_path: str,
     out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width * 2, height))
     
     frame_detections = defaultdict(list)
+    confirmed_track_points = defaultdict(list)
     for det in processor.all_detections:
         frame_detections[det['frame_number']].append(det)
+        if det['track_id'] in confirmed_track_ids:
+            bbox = det['bbox']
+            cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
+            confirmed_track_points[det['track_id']].append((det['frame_number'], cx, cy))
     
     frame_num = 0
     while True:
@@ -1067,6 +1138,11 @@ def _render_debug_video(video_path: str, output_path: str,
         
         fg_mask = back_sub.apply(frame)
         fg_display = cv2.cvtColor(fg_mask, cv2.COLOR_GRAY2BGR)
+        
+        for track_id, points in confirmed_track_points.items():
+            path_to_draw = [(cx, cy) for fn, cx, cy in points if fn <= frame_num]
+            if len(path_to_draw) > 1:
+                FrameVisualizer.draw_path(frame, path_to_draw, track_id)
         
         for det in frame_detections[frame_num]:
             x1, y1, x2, y2 = [int(v) for v in det['bbox']]
