@@ -4,6 +4,25 @@
 # This config controls motion-based insect detection parameters.
 # All values shown are defaults - modify as needed for your use case.
 #
+# RESOLUTION-INDEPENDENT UNITS
+# ----------------------------
+# Scene-scale pixel parameters below are given as FRACTIONS of the input
+# image dimensions, not as absolute pixels. This makes a single config
+# work across any resolution. Two reference dimensions are used:
+#
+#   * Length-based -> fraction of image width W
+#         Keys:  min_displacement, max_frame_jump, revisit_radius
+#   * Area-based   -> fraction of image area (W * H)
+#         Keys:  min_area, max_area
+#
+# Examples below show the resolved pixel value for a 1080 px wide square
+# frame (1080 x 1080, area = 1,166,400 px^2):
+#   min_area: 0.0002        ->   ~233 px^2
+#   min_displacement: 0.05  ->    54  px
+#
+# `morph_kernel_size` is an exception: it is a local noise-removal
+# kernel and stays in absolute pixels (NxN) regardless of resolution.
+#
 # Usage:
 #   results = inference(..., config="detection_config.yaml")
 # =============================================================================
@@ -26,8 +45,10 @@ gmm_var_threshold: 16
 # -----------------------------------------------------------------------------
 # Noise removal after motion detection
 
-# Size of the morphological kernel (NxN ellipse)
-# Larger = removes more noise but may lose small detections
+# Size of the morphological kernel in pixels (NxN ellipse).
+# This is an absolute pixel count, NOT a fraction of image width — the
+# kernel targets sensor-level noise, not scene-scale features.
+# Larger = removes more noise but may lose small detections.
 morph_kernel_size: 3
 
 # -----------------------------------------------------------------------------
@@ -52,13 +73,16 @@ min_motion_ratio: 0.15
 # -----------------------------------------------------------------------------
 # Filter detections by contour geometry
 
-# Min contour area in pixels² (rejects noise/tiny detections)
-min_area: 200
+# Min contour area as FRACTION of image area (rejects noise/tiny detections)
+# 0.0002 on a 1080 x 1080 frame ~= 233 px^2
+min_area: 0.0002
 
-# Max contour area in pixels² (rejects large moving objects)
-max_area: 40000
+# Max contour area as FRACTION of image area (rejects large moving objects)
+# 0.035 on a 1080 x 1080 frame ~= 40,824 px^2
+max_area: 0.035
 
 # Min area/perimeter ratio (rejects thin/elongated shapes)
+# Unitless shape descriptor; not scaled with image size.
 min_density: 3.0
 
 # Min convex hull fill ratio (rejects irregular/fragmented shapes)
@@ -70,16 +94,18 @@ min_solidity: 0.55
 # -----------------------------------------------------------------------------
 # Control how detections are linked into tracks
 
-# Min NET displacement in pixels for track confirmation
-# Filters stationary false positives
-min_displacement: 50
+# Min NET displacement for track confirmation, as FRACTION of image width.
+# Filters stationary false positives.
+# 0.05 on a 1080 px wide frame = 54 px
+min_displacement: 0.05
 
 # Min path points required before topology analysis
 min_path_points: 10
 
-# Max allowed jump between consecutive frames (pixels)
-# Larger = more tolerant of fast movement, but may link separate objects
-max_frame_jump: 100
+# Max allowed jump between consecutive frames, as FRACTION of image width.
+# Larger = more tolerant of fast movement, but may link separate objects.
+# 0.1 on a 1080 px wide frame = 108 px
+max_frame_jump: 0.1
 
 # How many frames to remember a lost track before deleting
 # Helps re-link tracks after brief occlusions (e.g., 45 frames @ 30fps = 1.5s)
@@ -123,6 +149,7 @@ min_progression_ratio: 0.70
 # Lower = stricter, requires more consistent direction
 max_directional_variance: 0.90
 
-# Radius in pixels for determining if a position is "revisited"
-# Smaller = stricter definition of revisiting
-revisit_radius: 50
+# Radius for determining if a position is "revisited", as FRACTION of image width.
+# Smaller = stricter definition of revisiting.
+# 0.05 on a 1080 px wide frame = 54 px
+revisit_radius: 0.05

@@ -222,14 +222,14 @@ css = ["tinycss2 (>=1.1.0,<1.5)"]
 
 [[package]]
 name = "bugspot"
-version = "0.2.0"
+version = "0.3.2"
 description = "Lightweight insect detection and tracking using motion-based detection"
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "bugspot-0.2.0-py3-none-any.whl", hash = "sha256:fed036e3e5feb680a3f83ddb2dc20205d3d35c1e8c6bc59d0cd708db7339dec3"},
-    {file = "bugspot-0.2.0.tar.gz", hash = "sha256:909c8d91b045c8ebbfcd633af349afa7675b1355180539d3eadb27b47c1dea09"},
+    {file = "bugspot-0.3.2-py3-none-any.whl", hash = "sha256:58d4e6b9cb08151df09d1edfadf16ca1370aea7fdb083a8becef583c551b83a3"},
+    {file = "bugspot-0.3.2.tar.gz", hash = "sha256:af357f802135c5ae624b46df3628cf0a5ee87b780e28a5379b68c47b59ade6fc"},
 ]
 
 [package.dependencies]
@@ -3342,7 +3342,7 @@ description = "Easily download, build, install, upgrade, and uninstall Python pa
 optional = false
 python-versions = ">=3.9"
 groups = ["main"]
-markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and sys_platform != \"darwin\" or python_version >= \"3.12\" and sys_platform != \"darwin\" or python_version >= \"3.12\" and platform_machine != \"x86_64\""
+markers = "platform_system == \"Linux\" and platform_machine == \"x86_64\" and sys_platform != \"darwin\" or python_version == \"3.12\" and sys_platform != \"darwin\" or python_version == \"3.12\" and platform_machine != \"x86_64\""
 files = [
     {file = "setuptools-78.1.0-py3-none-any.whl", hash = "sha256:3e386e96793c8702ae83d17b853fb93d3e09ef82ec62722e61da5cd22376dcd8"},
     {file = "setuptools-78.1.0.tar.gz", hash = "sha256:18fd474d4a82a5f83dac888df697af65afa82dec7323d09c3e37d1f14288da54"},
@@ -4081,5 +4081,5 @@ files = [
 
 [metadata]
 lock-version = "2.1"
-python-versions = "^3.10"
-content-hash = "7b837eb7d29280130e1d5ec771c4364d0622c4bd7a4ebe0fa640ba4d59d120ab"
+python-versions = ">=3.10,<3.13"
+content-hash = "c89146b049845eaec338d7993aa789bd3377f69f8cd4ad26813cbfc831550764"

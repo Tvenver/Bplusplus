@@ -4,6 +4,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-03-26
+
+### Fixed
+- **Python 3.13 compatibility claim corrected.** `pyproject.toml` previously
+  declared `python = "^3.10"` (i.e. `>=3.10,<4.0`), but the pinned stack
+  cannot install on CPython 3.13: `pandas==2.1.4`, `numpy>=1.26,<1.27`,
+  `pyyaml==6.0.1`, and the `scikit-learn` range currently allowed all ship
+  no `cp313` wheels, and their sdists fail to compile against 3.13's C API.
+  The Python constraint is now `>=3.10,<3.13` to reflect actually tested
+  and installable versions. Full 3.13 support is tracked for a later
+  release and will require bumping pandas (>=2.2.3), numpy (>=2.1.0),
+  pyyaml (>=6.0.2), and scikit-learn (>=1.5.1).
+
+### Added
+- **`{video_name}_tracks.csv` output**: New per-run CSV listing every track
+  (confirmed *and* unconfirmed) with detection stats, raw topology
+  calculations (`net_displacement`, `revisit_ratio`, `progression_ratio`,
+  `directional_variance`, `total_path_length`), per-criterion pass flags
+  (`path_points_pass`, `displacement_pass`, `revisit_pass`,
+  `progression_pass`, `directional_variance_pass`), and the config
+  thresholds used for each check. The CSV records both the originating
+  fraction config value (e.g. `min_displacement_frac`,
+  `revisit_radius_frac`) and the resolved pixel threshold actually used,
+  for full traceability. Enables fast diagnosis of why tracks were
+  rejected by the topology filter.
+- `compute_full_track_metrics()` helper that always returns raw metric
+  values (NaN only when genuinely undefined), regardless of path length.
+
+### Changed
+- **Pixel-scale config values are now expressed as FRACTIONS of image
+  dimensions, not absolute pixels.** Affected keys: `morph_kernel_size`,
+  `min_area`, `max_area`, `min_displacement`, `max_frame_jump`,
+  `revisit_radius`. Lengths are fractions of the image width `W`; areas
+  are fractions of `W * H`. One config now works across resolutions.
+  See `detection_config.yaml` and the README for 1080 px wide reference
+  values. Pre-existing configs with absolute pixel values should be
+  updated — a runtime warning is emitted if a fraction value exceeds 1.0.
+- `VideoInferenceProcessor` now defers motion detector creation to a new
+  `setup(image_width, image_height)` call, invoked automatically by
+  `process_video` after the input video is opened. Direct callers of
+  `process_frame` still work — `setup` auto-runs from the first frame's
+  shape if not called explicitly.
+- Requires `bugspot >=0.3.2` (which exports the underlying metric helpers
+  `calculate_revisit_ratio`, `calculate_progression_ratio`,
+  `calculate_directional_variance`, and the new
+  `resolve_detection_params`). `morph_kernel_size` stays in absolute
+  NxN pixels as before; only scene-scale lengths/areas became fractions.
+- `analyze_tracks`, `detection_only_results`, and `hierarchical_aggregation`
+  now share a single metric-computation path for consistency.
+
 ## [2.1.0] - 2025-02-18
 
 ### Added

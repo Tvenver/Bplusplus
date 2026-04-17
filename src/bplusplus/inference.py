@@ -46,7 +46,10 @@ from bugspot import (
     DEFAULT_DETECTION_CONFIG,
     MotionDetector,
     get_default_config,
-    analyze_path_topology,
+    resolve_detection_params,
+    calculate_revisit_ratio,
+    calculate_progression_ratio,
+    calculate_directional_variance,
     check_track_consistency,
 )
 
@@ -136,6 +139,115 @@ def load_config(config_path: str) -> Dict:
             logger.warning(f"Unknown config parameter ignored: {key}")
     
     return params
+
+
+# =============================================================================
+# TRACK METRICS
+# =============================================================================
+
+def compute_full_track_metrics(path: List[Tuple[float, float]], params: Dict) -> Dict:
+    """
+    Compute all topology metrics for a track path, even if it is too short
+    to be considered for confirmation.
+
+    Unlike ``analyze_path_topology``, this always returns the raw measured
+    values (using NaN only when a metric is genuinely undefined) alongside
+    per-criterion pass flags and the config thresholds used. This allows
+    unconfirmed tracks to appear in the tracks CSV with diagnostic info
+    explaining *why* they failed.
+
+    Args:
+        path: List of (x, y) centroid positions for the track.
+        params: RESOLVED detection config parameters (see
+            ``bugspot.resolve_detection_params``). Pixel-scale thresholds
+            like ``min_displacement`` and ``revisit_radius`` must be in
+            absolute pixel units; the matching ``{key}_frac`` values from
+            the original fraction-based config are also recorded in the
+            output for traceability.
+
+    Returns:
+        dict: Raw metrics, per-criterion pass flags, and both the resolved
+        pixel thresholds and their originating fraction-of-image values.
+    """
+    min_path_points = params.get("min_path_points", 10)
+    min_displacement = params.get("min_displacement", 50)
+    max_revisit_ratio = params.get("max_revisit_ratio", 0.30)
+    min_progression_ratio = params.get("min_progression_ratio", 0.70)
+    max_directional_variance = params.get("max_directional_variance", 0.90)
+    revisit_radius = params.get("revisit_radius", 50)
+
+    # Original fraction values from the config (may be None if params was
+    # never resolved, e.g. when called directly with absolute pixel values).
+    min_displacement_frac = params.get("min_displacement_frac")
+    revisit_radius_frac = params.get("revisit_radius_frac")
+
+    num_path_points = len(path)
+    path_points_pass = num_path_points >= min_path_points
+
+    if num_path_points >= 2:
+        path_arr = np.array(path)
+        net_displacement = float(np.linalg.norm(path_arr[-1] - path_arr[0]))
+        revisit_ratio = float(calculate_revisit_ratio(path_arr, revisit_radius))
+        progression_ratio = float(calculate_progression_ratio(path_arr))
+        directional_variance = float(calculate_directional_variance(path_arr))
+
+        step_dists = np.linalg.norm(np.diff(path_arr, axis=0), axis=1)
+        total_path_length = float(step_dists.sum())
+    else:
+        net_displacement = float("nan")
+        revisit_ratio = float("nan")
+        progression_ratio = float("nan")
+        directional_variance = float("nan")
+        total_path_length = float("nan")
+
+    displacement_pass = (
+        net_displacement >= min_displacement if not np.isnan(net_displacement) else False
+    )
+    revisit_pass = (
+        revisit_ratio <= max_revisit_ratio if not np.isnan(revisit_ratio) else False
+    )
+    progression_pass = (
+        progression_ratio >= min_progression_ratio if not np.isnan(progression_ratio) else False
+    )
+    variance_pass = (
+        directional_variance <= max_directional_variance
+        if not np.isnan(directional_variance) else False
+    )
+
+    passes_topology = (
+        path_points_pass
+        and displacement_pass
+        and revisit_pass
+        and progression_pass
+        and variance_pass
+    )
+
+    return {
+        # Raw measurements (all in pixels for length/displacement)
+        "num_path_points": num_path_points,
+        "total_path_length": total_path_length,
+        "net_displacement": net_displacement,
+        "revisit_ratio": revisit_ratio,
+        "progression_ratio": progression_ratio,
+        "directional_variance": directional_variance,
+        # Per-criterion pass flags
+        "path_points_pass": path_points_pass,
+        "displacement_pass": displacement_pass,
+        "revisit_pass": revisit_pass,
+        "progression_pass": progression_pass,
+        "directional_variance_pass": variance_pass,
+        "passes_topology": passes_topology,
+        # Resolved pixel thresholds that were actually compared against
+        "min_path_points": min_path_points,
+        "min_displacement": min_displacement,
+        "max_revisit_ratio": max_revisit_ratio,
+        "min_progression_ratio": min_progression_ratio,
+        "max_directional_variance": max_directional_variance,
+        "revisit_radius": revisit_radius,
+        # Original fraction-of-image-width values from the config file
+        "min_displacement_frac": min_displacement_frac,
+        "revisit_radius_frac": revisit_radius_frac,
+    }
 
 
 # =============================================================================
@@ -400,12 +512,20 @@ class VideoInferenceProcessor:
             classify: If True, load model and classify confirmed tracks. If False, detection only.
         """
         self.img_size = img_size
-        self.params = params
+        # Raw (fraction-based) config as provided by the caller. Values
+        # like min_area/min_displacement are fractions of image dimensions;
+        # they get resolved to absolute pixels in ``setup`` once the video
+        # frame size is known.
+        self._raw_params = dict(params)
+        # Resolved (pixel-based) config — populated by ``setup``. Falls
+        # back to the raw dict until then for consumers that inspect it.
+        self.params: Dict = dict(params)
         self.classify = classify
-        
-        # Motion detector (always needed)
-        self._detector = MotionDetector(params)
-        
+        self._is_setup = False
+
+        # Motion detector — created lazily in ``setup`` with resolved params.
+        self._detector: Optional[MotionDetector] = None
+
         # Track state
         self.all_detections: List[Dict] = []
         self.track_paths: Dict[str, List[Tuple[float, float]]] = defaultdict(list)
@@ -467,6 +587,18 @@ class VideoInferenceProcessor:
         
         print("Processor initialized successfully!")
     
+    def setup(self, image_width: int, image_height: int) -> None:
+        """
+        Resolve fraction-based config to absolute pixels and build the
+        motion detector. Must be called before ``process_frame`` (done
+        automatically by ``process_video`` once the video is opened).
+        """
+        self.params = resolve_detection_params(
+            self._raw_params, image_width, image_height
+        )
+        self._detector = MotionDetector(self.params)
+        self._is_setup = True
+
     def _classify(self, frame: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> Classification:
         """Classify a detection crop."""
         crop = frame[int(y1):int(y2), int(x1):int(x2)]
@@ -506,6 +638,10 @@ class VideoInferenceProcessor:
         Returns:
             tuple: (foreground_mask, list of detections with track_ids)
         """
+        if not self._is_setup:
+            height, width = frame.shape[:2]
+            self.setup(width, height)
+
         # Detect
         detections, fg_mask = self._detector.detect(frame, frame_number)
         
@@ -701,47 +837,62 @@ class VideoInferenceProcessor:
     
     def analyze_tracks(self) -> Tuple[Set[str], Dict]:
         """
-        Analyze all tracks to determine which pass topology.
-        
+        Analyze all tracks (confirmed and unconfirmed) to determine which
+        pass topology, collecting full diagnostic info for each.
+
         Returns:
             tuple: (confirmed_track_ids set, all_track_info dict)
         """
         print("\n" + "="*60)
         print("TRACK TOPOLOGY ANALYSIS")
         print("="*60)
-        
+
         track_detections = defaultdict(list)
         for det in self.all_detections:
             if det['track_id']:
                 track_detections[det['track_id']].append(det)
-        
+
         confirmed_track_ids: Set[str] = set()
         all_track_info: Dict = {}
-        
+
         for track_id, detections in track_detections.items():
             path = self.track_paths.get(track_id, [])
-            passes_topology, topology_metrics = analyze_path_topology(path, self.params)
-            
+            areas = self.track_areas.get(track_id, [])
+            metrics = compute_full_track_metrics(path, self.params)
+
+            frame_numbers = [d['frame_number'] for d in detections]
             frame_times = [d['frame_time_seconds'] for d in detections]
-            
+
+            if areas:
+                mean_area = float(np.mean(areas))
+                min_area = float(np.min(areas))
+                max_area = float(np.max(areas))
+            else:
+                mean_area = min_area = max_area = float("nan")
+
             track_info = {
                 'track_id': track_id,
+                'status': 'confirmed' if metrics['passes_topology'] else 'unconfirmed',
                 'num_detections': len(detections),
+                'first_frame': min(frame_numbers),
+                'last_frame': max(frame_numbers),
                 'first_frame_time': min(frame_times),
                 'last_frame_time': max(frame_times),
                 'duration': max(frame_times) - min(frame_times),
-                'passes_topology': passes_topology,
-                **topology_metrics
+                'mean_area': mean_area,
+                'min_area_observed': min_area,
+                'max_area_observed': max_area,
+                **metrics,
             }
             all_track_info[track_id] = track_info
-            
-            status = "✓ CONFIRMED" if passes_topology else "? unconfirmed"
+
+            status = "✓ CONFIRMED" if metrics['passes_topology'] else "? unconfirmed"
             print(f"Track {str(track_id)[:8]}: {len(detections)} detections, "
                   f"{track_info['duration']:.1f}s - {status}")
-            
-            if passes_topology:
+
+            if metrics['passes_topology']:
                 confirmed_track_ids.add(track_id)
-        
+
         print(f"\n✓ {len(confirmed_track_ids)} confirmed / {len(track_detections)} total tracks")
         return confirmed_track_ids, all_track_info
     
@@ -768,10 +919,10 @@ class VideoInferenceProcessor:
         results = []
         for track_id, detections in track_detections.items():
             path = self.track_paths.get(track_id, [])
-            passes_topology, topology_metrics = analyze_path_topology(path, self.params)
-            
+            metrics = compute_full_track_metrics(path, self.params)
+
             frame_times = [d['frame_time_seconds'] for d in detections]
-            
+
             result = {
                 'track_id': track_id,
                 'num_detections': len(detections),
@@ -784,14 +935,13 @@ class VideoInferenceProcessor:
                 'family_confidence': float('nan'),
                 'genus_confidence': float('nan'),
                 'species_confidence': float('nan'),
-                'passes_topology': passes_topology,
-                **topology_metrics
+                **metrics,
             }
             results.append(result)
-            
+
             print(f"Track {str(track_id)[:8]}: {len(detections)} detections, "
                   f"{result['duration']:.1f}s")
-        
+
         return results
     
     def hierarchical_aggregation(self, confirmed_track_ids: Set[str]) -> List[Dict]:
@@ -821,9 +971,9 @@ class VideoInferenceProcessor:
                 continue
             
             print(f"\nTrack {str(track_id)[:8]}: {len(detections)} classified detections")
-            
+
             path = self.track_paths.get(track_id, [])
-            passes_topology, topology_metrics = analyze_path_topology(path, self.params)
+            metrics = compute_full_track_metrics(path, self.params)
             
             # Average probabilities
             prob_avgs = [
@@ -866,8 +1016,7 @@ class VideoInferenceProcessor:
                 'family_confidence': float(prob_avgs[0][best_family_idx]),
                 'genus_confidence': float(prob_avgs[1][best_genus_idx]),
                 'species_confidence': float(prob_avgs[2][best_species_idx]),
-                'passes_topology': passes_topology,
-                **topology_metrics
+                **metrics,
             }
             results.append(result)
             
@@ -876,21 +1025,92 @@ class VideoInferenceProcessor:
         
         return results
     
-    def save_results(self, results: List[Dict], output_paths: Dict) -> pd.DataFrame:
+    def _build_tracks_rows(
+        self,
+        all_track_info: Dict,
+        results: List[Dict],
+    ) -> List[Dict]:
+        """
+        Build per-track rows for the tracks CSV, merging classification
+        results (for confirmed tracks) into the full track info.
+
+        Columns are ordered for readability: identification, detection
+        stats, topology calculations, per-criterion pass flags, config
+        thresholds, and classification output.
+        """
+        classification_by_id: Dict[str, Dict] = {}
+        for r in results:
+            tid = r.get('track_id')
+            if tid is not None:
+                classification_by_id[tid] = {
+                    'final_family': r.get('final_family'),
+                    'final_genus': r.get('final_genus'),
+                    'final_species': r.get('final_species'),
+                    'family_confidence': r.get('family_confidence'),
+                    'genus_confidence': r.get('genus_confidence'),
+                    'species_confidence': r.get('species_confidence'),
+                }
+
+        column_order = [
+            # Identification
+            'track_id', 'status', 'passes_topology',
+            # Detection stats
+            'num_detections', 'num_path_points',
+            'first_frame', 'last_frame',
+            'first_frame_time', 'last_frame_time', 'duration',
+            'mean_area', 'min_area_observed', 'max_area_observed',
+            # Topology calculations (raw values — lengths in pixels)
+            'net_displacement', 'total_path_length',
+            'revisit_ratio', 'progression_ratio', 'directional_variance',
+            # Per-criterion pass flags (which config check passed/failed)
+            'path_points_pass', 'displacement_pass', 'revisit_pass',
+            'progression_pass', 'directional_variance_pass',
+            # Resolved pixel thresholds actually used for each check
+            'min_path_points', 'min_displacement',
+            'max_revisit_ratio', 'min_progression_ratio',
+            'max_directional_variance', 'revisit_radius',
+            # Originating fraction-of-image values from the config file
+            'min_displacement_frac', 'revisit_radius_frac',
+            # Classification (only set for confirmed+classified tracks)
+            'final_family', 'final_genus', 'final_species',
+            'family_confidence', 'genus_confidence', 'species_confidence',
+        ]
+
+        rows = []
+        for track_id, info in all_track_info.items():
+            row = {k: info.get(k) for k in column_order if k in info}
+            cls = classification_by_id.get(track_id, {})
+            for k in ('final_family', 'final_genus', 'final_species',
+                      'family_confidence', 'genus_confidence', 'species_confidence'):
+                row[k] = cls.get(k, float('nan'))
+            rows.append({k: row.get(k) for k in column_order})
+        return rows
+
+    def save_results(
+        self,
+        results: List[Dict],
+        output_paths: Dict,
+        all_track_info: Optional[Dict] = None,
+    ) -> pd.DataFrame:
         """
         Save results to CSV and print summary.
-        
+
         Args:
             results: Aggregated results list (confirmed tracks only)
             output_paths: Dict with output file paths
-            
+            all_track_info: Dict of {track_id: info} for ALL tracks (confirmed
+                and unconfirmed). When provided, and ``tracks_csv`` is in
+                ``output_paths``, a tracks.csv is written containing every
+                track with its full topology calculations and pass/fail flags
+                per config criterion.
+
         Returns:
-            pd.DataFrame: Results dataframe
+            pd.DataFrame: Results dataframe (confirmed tracks)
         """
         total_tracks = len(self.track_paths)
         num_confirmed = len(results)
         num_unconfirmed = total_tracks - num_confirmed
-        
+
         if results:
             df = pd.DataFrame(results).sort_values('num_detections', ascending=False)
             df.to_csv(output_paths["results_csv"], index=False)
@@ -900,15 +1120,29 @@ class VideoInferenceProcessor:
                 'track_id', 'num_detections', 'first_frame_time', 'last_frame_time',
                 'duration', 'final_family', 'final_genus', 'final_species',
                 'family_confidence', 'genus_confidence', 'species_confidence',
-                'passes_topology', 'total_displacement', 'revisit_ratio',
-                'progression_ratio', 'directional_variance'
+                'passes_topology', 'net_displacement', 'revisit_ratio',
+                'progression_ratio', 'directional_variance',
+                'min_displacement_frac', 'revisit_radius_frac',
             ])
             df.to_csv(output_paths["results_csv"], index=False)
             print(f"\n📊 Results file created (empty): {output_paths['results_csv']}")
-        
+
         det_df = pd.DataFrame(self.all_detections)
         det_df.to_csv(output_paths["detections_csv"], index=False)
         print(f"📋 Frame-by-frame detections saved: {output_paths['detections_csv']}")
+
+        if all_track_info is not None and "tracks_csv" in output_paths:
+            tracks_rows = self._build_tracks_rows(all_track_info, results)
+            tracks_df = pd.DataFrame(tracks_rows)
+            if not tracks_df.empty:
+                if 'status' in tracks_df.columns and 'num_detections' in tracks_df.columns:
+                    tracks_df = tracks_df.sort_values(
+                        by=['status', 'num_detections'],
+                        ascending=[True, False],
+                    )
+            tracks_df.to_csv(output_paths["tracks_csv"], index=False)
+            print(f"🧵 All tracks (confirmed + unconfirmed) saved: {output_paths['tracks_csv']} "
+                  f"({len(tracks_rows)} tracks)")
         
         # Summary
         print("\n" + "="*60)
@@ -985,10 +1219,15 @@ def process_video(video_path: str, processor: VideoInferenceProcessor,
     
     print(f"\nVideo: {video_path}")
     print(f"Properties: {total_frames} frames, {input_fps:.1f} FPS, {total_frames/input_fps:.1f}s")
-    
-    # Setup tracker
+
+    # Resolve fraction-based config to absolute pixels now that we know
+    # the frame size. After this, processor.params holds pixel values
+    # plus `{key}_frac` companions for record/diagnostics.
+    processor.setup(width, height)
+
+    # Setup tracker (using resolved pixel values)
     max_lost_frames = processor.params.get("max_lost_frames", 45)
-    
+
     tracker = InsectTracker(
         image_height=height,
         image_width=width,
@@ -1097,7 +1336,7 @@ def process_video(video_path: str, processor: VideoInferenceProcessor,
     else:
         print("\n(Video rendering skipped)")
     
-    processor.save_results(results, output_paths)
+    processor.save_results(results, output_paths, all_track_info=all_track_info)
     return results
 
 
@@ -1324,8 +1563,12 @@ def inference(
     Generated files in output_dir:
         - {video_name}_annotated.mp4: Video with detection boxes and paths (if save_video=True)
         - {video_name}_debug.mp4: Side-by-side with GMM motion mask (if save_video=True)
-        - {video_name}_results.csv: Aggregated track results
+        - {video_name}_results.csv: Aggregated track results (confirmed tracks only)
         - {video_name}_detections.csv: Frame-by-frame detections
+        - {video_name}_tracks.csv: Every track (confirmed + unconfirmed) with
+            full topology calculations, per-criterion pass flags, and the
+            config thresholds used for each check. Useful for diagnosing
+            why tracks were rejected.
         - {video_name}_crops/ (if crops=True): Directory with cropped frames per track
         - {video_name}_composites/ (if track_composites=True): Composite images per track
     """
@@ -1358,6 +1601,7 @@ def inference(
     output_paths = {
         "results_csv": os.path.join(output_dir, f"{video_name}_results.csv"),
         "detections_csv": os.path.join(output_dir, f"{video_name}_detections.csv"),
+        "tracks_csv": os.path.join(output_dir, f"{video_name}_tracks.csv"),
     }
     
     if save_video:
@@ -1445,8 +1689,10 @@ Examples:
 Output files generated in output directory:
   - {video_name}_annotated.mp4: Video with detection boxes and paths
   - {video_name}_debug.mp4: Side-by-side view with GMM motion mask  
-  - {video_name}_results.csv: Aggregated track results
+  - {video_name}_results.csv: Aggregated track results (confirmed tracks only)
   - {video_name}_detections.csv: Frame-by-frame detections
+  - {video_name}_tracks.csv: All tracks (confirmed + unconfirmed) with
+      full topology calculations and per-criterion pass flags
   - {video_name}_crops/ (with --crops): Cropped frames for each track
         """
     )
@@ -1487,22 +1733,22 @@ Output files generated in output directory:
                          help=f'Max number of blobs (default: {defaults["max_num_blobs"]})')
     
     shape = parser.add_argument_group('Shape parameters')
-    shape.add_argument('--min-area', type=int,
-                      help=f'Min area in px² (default: {defaults["min_area"]})')
-    shape.add_argument('--max-area', type=int,
-                      help=f'Max area in px² (default: {defaults["max_area"]})')
+    shape.add_argument('--min-area', type=float,
+                      help=f'Min contour area as fraction of image area (default: {defaults["min_area"]})')
+    shape.add_argument('--max-area', type=float,
+                      help=f'Max contour area as fraction of image area (default: {defaults["max_area"]})')
     shape.add_argument('--min-density', type=float,
                       help=f'Min density (default: {defaults["min_density"]})')
     shape.add_argument('--min-solidity', type=float,
                       help=f'Min solidity (default: {defaults["min_solidity"]})')
-    
+
     tracking = parser.add_argument_group('Tracking parameters')
-    tracking.add_argument('--min-displacement', type=int,
-                         help=f'Min NET displacement in px (default: {defaults["min_displacement"]})')
+    tracking.add_argument('--min-displacement', type=float,
+                         help=f'Min NET displacement as fraction of image width (default: {defaults["min_displacement"]})')
     tracking.add_argument('--min-path-points', type=int,
                          help=f'Min path points (default: {defaults["min_path_points"]})')
-    tracking.add_argument('--max-frame-jump', type=int,
-                         help=f'Max pixels between frames (default: {defaults["max_frame_jump"]})')
+    tracking.add_argument('--max-frame-jump', type=float,
+                         help=f'Max per-frame jump as fraction of image width (default: {defaults["max_frame_jump"]})')
     tracking.add_argument('--max-lost-frames', type=int,
                          help=f'Frames before lost track deleted (default: {defaults["max_lost_frames"]})')
     
