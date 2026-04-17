@@ -8,14 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Python 3.13 compatibility claim corrected.** `pyproject.toml` previously
-  declared `python = "^3.10"` (i.e. `>=3.10,<4.0`), but the pinned stack
-  cannot install on CPython 3.13: `pandas==2.1.4`, `numpy>=1.26,<1.27`,
-  `pyyaml==6.0.1`, and the `scikit-learn` range currently allowed all ship
-  no `cp313` wheels, and their sdists fail to compile against 3.13's C API.
-  The Python constraint is now `>=3.10,<3.13` to reflect actually tested
-  and installable versions. Full 3.13 support is tracked for a later
-  release and will require bumping pandas (>=2.2.3), numpy (>=2.1.0),
-  pyyaml (>=6.0.2), and scikit-learn (>=1.5.1).
+  declared `python = "^3.10"`, which implied Python 3.13 was supported.
+  In practice the pinned dependency stack cannot install on CPython 3.13.
+  The Python constraint is now `>=3.10,<3.12` inclusive-style (i.e.
+  `>=3.10,<3.13`) and the README prerequisites state Python 3.10–3.12.
+  Full 3.13 support is planned for a future release.
 
 ### Added
 - **`{video_name}_tracks.csv` output**: New per-run CSV listing every track

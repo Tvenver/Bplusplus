@@ -33,7 +33,7 @@ The process is broken down into five main steps, all detailed in the `full_pipel
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.10 – 3.12 (Python 3.13 not yet supported)
 
 ### Setup
 
