@@ -173,40 +173,42 @@ print(f"Confirmed: {results['confirmed_tracks']} / {results['tracks']} tracks")
 
 **Detection configuration** can be customized via a YAML/JSON file passed as `config=`. Download a template from the [releases page](https://github.com/Tvenver/Bplusplus/releases).
 
+> **Resolution-independent units.** Scene-scale pixel parameters are **fractions of image dimensions**, not absolute pixels, so one config works across resolutions. Lengths are fractions of the image width `W`; areas are fractions of `W * H`. They are resolved to absolute pixels at runtime once the frame size is known. The `1080 px wide` column shows the resolved value for a 1080×1080 frame for intuition. `morph_kernel_size` is an exception — it stays in absolute NxN pixels since it targets sensor-level noise.
+
 <details>
 <summary><b>Full Configuration Parameters</b> (click to expand)</summary>
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| **GMM Background Subtractor** | | *Motion detection model* |
-| `gmm_history` | 500 | Frames to build background model |
-| `gmm_var_threshold` | 16 | Variance threshold for foreground detection |
-| **Morphological Filtering** | | *Noise removal* |
-| `morph_kernel_size` | 3 | Morphological kernel size (NxN) |
-| **Cohesiveness** | | *Filters scattered motion (plants) vs compact motion (insects)* |
-| `min_largest_blob_ratio` | 0.80 | Min ratio of largest blob to total motion |
-| `max_num_blobs` | 5 | Max separate blobs allowed in detection |
-| `min_motion_ratio` | 0.15 | Min ratio of motion pixels to bbox area |
-| **Shape** | | *Filters by contour properties* |
-| `min_area` | 200 | Min detection area (px²) |
-| `max_area` | 40000 | Max detection area (px²) |
-| `min_density` | 3.0 | Min area/perimeter ratio |
-| `min_solidity` | 0.55 | Min convex hull fill ratio |
-| **Tracking** | | *Controls track behavior* |
-| `min_displacement` | 50 | Min net movement for confirmation (px) |
-| `min_path_points` | 10 | Min points before path analysis |
-| `max_frame_jump` | 100 | Max jump between frames (px) |
-| `max_lost_frames` | 45 | Frames before lost track deleted (e.g., 45 @ 30fps = 1.5s) |
-| `max_area_change_ratio` | 3.0 | Max area change ratio between frames |
-| **Tracker Matching** | | *Hungarian algorithm cost function* |
-| `tracker_w_dist` | 0.6 | Weight for distance cost (0-1) |
-| `tracker_w_area` | 0.4 | Weight for area cost (0-1) |
-| `tracker_cost_threshold` | 0.3 | Max cost for valid match (0-1) |
-| **Path Topology** | | *Confirms insect-like movement patterns* |
-| `max_revisit_ratio` | 0.30 | Max ratio of revisited positions |
-| `min_progression_ratio` | 0.70 | Min forward progression |
-| `max_directional_variance` | 0.90 | Max heading variance |
-| `revisit_radius` | 50 | Radius (px) for revisit detection |
+| Parameter | Default | 1080 px wide | Description |
+|-----------|---------|--------------|-------------|
+| **GMM Background Subtractor** | | | *Motion detection model* |
+| `gmm_history` | 500 | — | Frames to build background model |
+| `gmm_var_threshold` | 16 | — | Variance threshold for foreground detection |
+| **Morphological Filtering** | | | *Noise removal* |
+| `morph_kernel_size` | 3 | 3 | Kernel size (NxN), absolute pixels |
+| **Cohesiveness** | | | *Filters scattered motion (plants) vs compact motion (insects)* |
+| `min_largest_blob_ratio` | 0.80 | — | Min ratio of largest blob to total motion |
+| `max_num_blobs` | 5 | — | Max separate blobs allowed in detection |
+| `min_motion_ratio` | 0.15 | — | Min ratio of motion pixels to bbox area |
+| **Shape** | | | *Filters by contour properties* |
+| `min_area` | 0.0002 | ~233 px² | Min detection area, fraction of image area |
+| `max_area` | 0.035 | ~40 824 px² | Max detection area, fraction of image area |
+| `min_density` | 3.0 | — | Min area/perimeter ratio (unitless) |
+| `min_solidity` | 0.55 | — | Min convex hull fill ratio |
+| **Tracking** | | | *Controls track behavior* |
+| `min_displacement` | 0.05 | 54 px | Min net movement for confirmation, fraction of image width |
+| `min_path_points` | 10 | — | Min points before path analysis |
+| `max_frame_jump` | 0.1 | 108 px | Max jump between frames, fraction of image width |
+| `max_lost_frames` | 45 | — | Frames before lost track deleted (e.g., 45 @ 30fps = 1.5s) |
+| `max_area_change_ratio` | 3.0 | — | Max area change ratio between frames |
+| **Tracker Matching** | | | *Hungarian algorithm cost function* |
+| `tracker_w_dist` | 0.6 | — | Weight for distance cost (0-1) |
+| `tracker_w_area` | 0.4 | — | Weight for area cost (0-1) |
+| `tracker_cost_threshold` | 0.3 | — | Max cost for valid match (0-1) |
+| **Path Topology** | | | *Confirms insect-like movement patterns* |
+| `max_revisit_ratio` | 0.30 | — | Max ratio of revisited positions |
+| `min_progression_ratio` | 0.70 | — | Min forward progression |
+| `max_directional_variance` | 0.90 | — | Max heading variance |
+| `revisit_radius` | 0.05 | 54 px | Revisit radius, fraction of image width |
 
 </details>
 
