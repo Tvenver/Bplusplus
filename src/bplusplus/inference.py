@@ -1738,6 +1738,10 @@ Output files generated in output directory:
                        help='Run detection at this WxH resolution for speed; '
                             'bounding boxes are scaled back to native res so '
                             'crops/composites stay full resolution')
+    parser.add_argument('--reference-resolution', type=int, nargs=2, metavar=('W', 'H'),
+                       help='Resolution the config was tuned for; auto-scales '
+                            'morph_kernel_size/min_density to the detection '
+                            'resolution (e.g. a 4K config running on 1080p)')
     
     # Detection parameters
     defaults = DEFAULT_DETECTION_CONFIG
@@ -1797,6 +1801,7 @@ Output files generated in output directory:
             "min_progression_ratio": args.min_progression_ratio,
             "max_directional_variance": args.max_directional_variance,
             "detection_resolution": args.detection_resolution,
+            "reference_resolution": args.reference_resolution,
         }
         config = {k: v for k, v in cli_overrides.items() if v is not None} or None
     

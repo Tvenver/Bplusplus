@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "bplusplus"
-version = "2.3.1"
+version = "2.3.2"
 description = "A simple method to create AI models for biodiversity, with collect and prepare pipeline"
 authors = ["Titus Venverloo <tvenver@mit.edu>", "Deniz Aydemir <deniz@aydemir.us>", "Orlando Closs <orlandocloss@pm.me>", "Ase Hatveit <aase@mit.edu>"]
 license = "MIT"
@@ -8,7 +8,7 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = ">=3.10,<3.13"
-bugspot = ">=0.4.1"
+bugspot = ">=0.4.2"
 requests = "2.25.1"
 pandas = "2.1.4"
 ultralytics = "8.3.173"

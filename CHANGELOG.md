@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.2] - 2026-06-10
+
+### Added
+- **`reference_resolution` config option** (and `--reference-resolution W H`
+  CLI flag): declares the resolution the config's absolute-pixel params were
+  tuned for. Via the shared `ScaledDetector` (bugspot `>=0.4.2`),
+  `morph_kernel_size` and `min_density` are auto-scaled from this reference to
+  whatever resolution detection runs at, so a config tuned for, say, 4K works
+  on a native 1080p video without hand-tuning. `null` (default) keeps prior
+  behaviour by treating the native frame size as the reference.
+
 ## [2.3.1] - 2026-06-10
 
 ### Changed
