@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-06-10
+
+### Added
+- **`detection_resolution` config option**: Set an explicit `[width, height]`
+  to run motion detection on downscaled frames for speed. Bounding boxes are
+  scaled back to native resolution before tracking, so crops, composites, and
+  classification still operate at full resolution — only the GMM/morphology/
+  contour stage gets cheaper. Available via the config file/dict and the new
+  `--detection-resolution W H` CLI flag. `null`/omitted detects at native
+  resolution (unchanged behaviour).
+
+### Changed
+- `VideoInferenceProcessor.setup()` builds the motion detector with parameters
+  resolved at the detection resolution and runs detection on a resized frame
+  when `detection_resolution` is set. The native-resolution config still drives
+  tracking, topology, and consistency checks. `min_density` (a length-
+  dimensioned ratio that `resolve_detection_params` does not scale) is scaled
+  internally by the linear downscale factor so the same objects keep passing.
+- Requires `bugspot >=0.4.0` (which adds `detection_resolution` to the default
+  detection config).
+
 ## [2.2.0] - 2026-03-26
 
 ### Fixed

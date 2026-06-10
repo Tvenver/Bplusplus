@@ -52,6 +52,21 @@ gmm_var_threshold: 16
 morph_kernel_size: 3
 
 # -----------------------------------------------------------------------------
+# DETECTION RESOLUTION (SPEED)
+# -----------------------------------------------------------------------------
+# Explicit [width, height] (in pixels) to run the detector at. Detection
+# (GMM + morphology + contours) runs on frames resized to this resolution for
+# speed, while bounding boxes are scaled back to native resolution — so
+# tracking, crops, and composites are all still produced at full resolution.
+#
+# null (or omit) = detect at native resolution.
+# Example: [960, 540] detects a 1920x1080 frame at 960x540 (~4x fewer pixels).
+#
+# Area/length thresholds adapt automatically (fraction-based); min_density (a
+# length-dimensioned ratio) is scaled internally by the downscale factor.
+detection_resolution: null
+
+# -----------------------------------------------------------------------------
 # COHESIVENESS PARAMETERS
 # -----------------------------------------------------------------------------
 # These filter scattered motion (wind-blown plants) vs compact motion (insects)

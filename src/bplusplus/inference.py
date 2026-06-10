@@ -526,6 +526,13 @@ class VideoInferenceProcessor:
         # Motion detector — created lazily in ``setup`` with resolved params.
         self._detector: Optional[MotionDetector] = None
 
+        # Detection-resolution state — populated by ``setup``.
+        self._detection_downscaled = False
+        self._det_width = 0
+        self._det_height = 0
+        self._det_scale_x = 1.0
+        self._det_scale_y = 1.0
+
         # Track state
         self.all_detections: List[Dict] = []
         self.track_paths: Dict[str, List[Tuple[float, float]]] = defaultdict(list)
@@ -592,11 +599,46 @@ class VideoInferenceProcessor:
         Resolve fraction-based config to absolute pixels and build the
         motion detector. Must be called before ``process_frame`` (done
         automatically by ``process_video`` once the video is opened).
+
+        If ``detection_resolution`` is set in the config (a ``(width, height)``
+        pixel pair), the detector runs on frames resized to that resolution for
+        speed; bounding boxes are scaled back to native resolution in
+        ``process_frame`` so tracking, crops, and composites stay full-res.
+        ``self.params`` always holds the NATIVE-resolution resolved config used
+        by the tracker, topology, and consistency checks.
         """
         self.params = resolve_detection_params(
             self._raw_params, image_width, image_height
         )
-        self._detector = MotionDetector(self.params)
+
+        # Optional explicit detection resolution for speed.
+        detection_resolution = self._raw_params.get("detection_resolution")
+        det_width, det_height = image_width, image_height
+        if detection_resolution:
+            det_width = max(1, int(detection_resolution[0]))
+            det_height = max(1, int(detection_resolution[1]))
+
+        self._detection_downscaled = (det_width, det_height) != (image_width, image_height)
+        self._det_width = det_width
+        self._det_height = det_height
+        # Scale factors map detection-space coords back up to native pixels.
+        # x and y are independent so non-matching aspect ratios are handled.
+        self._det_scale_x = image_width / det_width
+        self._det_scale_y = image_height / det_height
+
+        # Resolve detector params at the DETECTION resolution so fraction-based
+        # area/length thresholds match the (possibly downscaled) frames it sees.
+        detector_params = resolve_detection_params(
+            self._raw_params, det_width, det_height
+        )
+        # ``min_density`` (area / perimeter) is length-dimensioned and is not
+        # scaled by resolve_detection_params; scale it by the linear downscale
+        # factor (geometric mean of x/y) so the same objects keep passing.
+        if self._detection_downscaled and detector_params.get("min_density"):
+            density_scale = (det_width / image_width * det_height / image_height) ** 0.5
+            detector_params["min_density"] = detector_params["min_density"] * density_scale
+
+        self._detector = MotionDetector(detector_params)
         self._is_setup = True
 
     def _classify(self, frame: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> Classification:
@@ -642,18 +684,38 @@ class VideoInferenceProcessor:
             height, width = frame.shape[:2]
             self.setup(width, height)
 
-        # Detect
-        detections, fg_mask = self._detector.detect(frame, frame_number)
-        
-        # Track
-        bboxes = [d.bbox for d in detections]
-        track_ids = tracker.update(bboxes, frame_number)
-        
         height, width = frame.shape[:2]
+
+        # Detect (optionally on a downscaled copy of the frame for speed)
+        if self._detection_downscaled:
+            detect_frame = cv2.resize(
+                frame, (self._det_width, self._det_height), interpolation=cv2.INTER_AREA
+            )
+        else:
+            detect_frame = frame
+        detections, fg_mask = self._detector.detect(detect_frame, frame_number)
+
+        # Scale detection bboxes back to native resolution so tracking, crops,
+        # and composites all operate on full-resolution coordinates.
+        bboxes = []
+        for det in detections:
+            dx1, dy1, dx2, dy2 = det.bbox
+            if self._detection_downscaled:
+                nx1 = max(0, min(int(round(dx1 * self._det_scale_x)), width))
+                ny1 = max(0, min(int(round(dy1 * self._det_scale_y)), height))
+                nx2 = max(0, min(int(round(dx2 * self._det_scale_x)), width))
+                ny2 = max(0, min(int(round(dy2 * self._det_scale_y)), height))
+            else:
+                nx1, ny1, nx2, ny2 = dx1, dy1, dx2, dy2
+            bboxes.append((nx1, ny1, nx2, ny2))
+
+        # Track
+        track_ids = tracker.update(bboxes, frame_number)
+
         frame_detections = []
-        
-        for i, det in enumerate(detections):
-            x1, y1, x2, y2 = det.bbox
+
+        for i, bbox in enumerate(bboxes):
+            x1, y1, x2, y2 = bbox
             track_id = track_ids[i] if i < len(track_ids) else None
             
             # Per-frame consistency check: ignore this frame if it
@@ -1722,6 +1784,10 @@ Output files generated in output directory:
                        help='Detection only - skip classification (NaN for species)')
     parser.add_argument('--track-composites', action='store_true',
                        help='Save composite images showing each track over time')
+    parser.add_argument('--detection-resolution', type=int, nargs=2, metavar=('W', 'H'),
+                       help='Run detection at this WxH resolution for speed; '
+                            'bounding boxes are scaled back to native res so '
+                            'crops/composites stay full resolution')
     
     # Detection parameters
     defaults = DEFAULT_DETECTION_CONFIG
@@ -1780,6 +1846,7 @@ Output files generated in output directory:
             "max_revisit_ratio": args.max_revisit_ratio,
             "min_progression_ratio": args.min_progression_ratio,
             "max_directional_variance": args.max_directional_variance,
+            "detection_resolution": args.detection_resolution,
         }
         config = {k: v for k, v in cli_overrides.items() if v is not None} or None
     
