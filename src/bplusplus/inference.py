@@ -23,6 +23,7 @@ Usage:
 import cv2
 import time
 import os
+import sys
 import yaml
 import json
 import numpy as np
@@ -412,22 +413,32 @@ class FrameVisualizer:
         return FrameVisualizer.COLORS[track_uuid.int % len(FrameVisualizer.COLORS)]
     
     @staticmethod
+    def vis_scale(frame_width: int) -> float:
+        """
+        Visualisation scale relative to 1080p, so line/text weights stay
+        readable when drawing on 4K frames (which are later downscaled).
+        """
+        return max(1.0, frame_width / 1920.0)
+
+    @staticmethod
     def draw_path(frame: np.ndarray, path: List[Tuple[float, float]], track_id: str) -> None:
         """Draw track path on frame."""
         if len(path) < 2:
             return
+        s = FrameVisualizer.vis_scale(frame.shape[1])
         color = FrameVisualizer.get_track_color(track_id)
         path_points = np.array(path, dtype=np.int32)
-        cv2.polylines(frame, [path_points], False, color, 2)
+        cv2.polylines(frame, [path_points], False, color, max(1, int(round(2 * s))))
         cx, cy = path[-1]
-        cv2.circle(frame, (int(cx), int(cy)), 4, color, -1)
+        cv2.circle(frame, (int(cx), int(cy)), max(2, int(round(4 * s))), color, -1)
     
     @staticmethod
     def draw_detection(frame: np.ndarray, x1: int, y1: int, x2: int, y2: int,
                        track_id: Optional[str], detection_data: Dict) -> None:
         """Draw bounding box and classification label on frame."""
+        s = FrameVisualizer.vis_scale(frame.shape[1])
         color = FrameVisualizer.get_track_color(track_id)
-        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
+        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, max(1, int(round(2 * s))))
         
         track_display = f"ID: {str(track_id)[:8]}" if track_id else "NEW"
         lines = [track_display]
@@ -445,10 +456,12 @@ class FrameVisualizer:
         if not lines[1:] and track_id is None:
             return
         
-        font, scale, thickness = cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1
-        padding, spacing = 8, 6
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        scale = 0.45 * s
+        thickness = max(1, int(round(s)))
+        padding, spacing = int(round(8 * s)), int(round(6 * s))
         text_sizes = [cv2.getTextSize(line, font, scale, thickness)[0] for line in lines]
-        max_w = max(s[0] for s in text_sizes)
+        max_w = max(sz[0] for sz in text_sizes)
         text_h = text_sizes[0][1]
         
         total_h = len(lines) * (text_h + spacing) + padding * 2
@@ -462,7 +475,7 @@ class FrameVisualizer:
         overlay = frame.copy()
         cv2.rectangle(overlay, (label_x1, label_y1), (label_x2, label_y2), (20, 20, 20), -1)
         cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
-        cv2.rectangle(frame, (label_x1, label_y1), (label_x2, label_y2), color, 1)
+        cv2.rectangle(frame, (label_x1, label_y1), (label_x2, label_y2), color, max(1, int(round(s))))
         
         y = label_y1 + padding + text_h
         for i, line in enumerate(lines):
@@ -1196,7 +1209,8 @@ class VideoInferenceProcessor:
 
 def process_video(video_path: str, processor: VideoInferenceProcessor,
                   output_paths: Dict, show_video: bool = False,
-                  fps: Optional[float] = None, crops_dir: Optional[str] = None) -> List[Dict]:
+                  fps: Optional[float] = None, crops_dir: Optional[str] = None,
+                  video_max_width: Optional[int] = 1920) -> List[Dict]:
     """
     Process video file with efficient classification (confirmed tracks only).
     
@@ -1265,16 +1279,25 @@ def process_video(video_path: str, processor: VideoInferenceProcessor,
     frame_num = 0
     processed = 0
     start = time.time()
+    # Lightweight per-substep timers to see where Phase 1 time actually goes:
+    # decode (cap.read of full-res frames) vs detect+track (process_frame, which
+    # is what detection_resolution speeds up).
+    decode_s = 0.0
+    detect_s = 0.0
     
     while True:
+        t0 = time.time()
         ret, frame = cap.read()
+        decode_s += time.time() - t0
         if not ret:
             break
         
         frame_time = frame_num / input_fps if input_fps > 0 else 0
         
         if frame_num % skip_interval == 0:
+            t1 = time.time()
             processor.process_frame(frame, frame_time, tracker, frame_num)
+            detect_s += time.time() - t1
             processed += 1
             
             if processed % 50 == 0:
@@ -1285,6 +1308,21 @@ def process_video(video_path: str, processor: VideoInferenceProcessor,
     cap.release()
     elapsed = time.time() - start
     print(f"\n✓ Phase 1 complete: {processed} frames in {elapsed:.1f}s ({processed/elapsed:.1f} FPS)")
+    _other_s = max(0.0, elapsed - decode_s - detect_s)
+    print(
+        f"  Timing breakdown: decode {decode_s:.1f}s ({decode_s/elapsed*100:.0f}%) | "
+        f"detect+track {detect_s:.1f}s ({detect_s/elapsed*100:.0f}%) | "
+        f"other {_other_s:.1f}s ({_other_s/elapsed*100:.0f}%)"
+    )
+    if processed:
+        print(
+            f"  Per processed frame: decode {decode_s/processed*1000:.1f} ms | "
+            f"detect+track {detect_s/processed*1000:.1f} ms"
+        )
+    print(
+        f"  Detection downscale active: {processor._scaled.downscaled} "
+        f"(detect res {processor._scaled.det_width}x{processor._scaled.det_height})"
+    )
     print(f"  Total detections: {len(processor.all_detections)}")
     print(f"  Unique tracks: {len(processor.track_paths)}")
     
@@ -1329,14 +1367,16 @@ def process_video(video_path: str, processor: VideoInferenceProcessor,
             print(f"\nRendering debug video (all detections)...")
             _render_debug_video(
                 video_path, output_paths["debug_video"],
-                processor, confirmed_track_ids, all_track_info, input_fps
+                processor, confirmed_track_ids, all_track_info, input_fps,
+                video_max_width=video_max_width
             )
         
         if "annotated_video" in output_paths:
             print(f"\nRendering annotated video ({len(confirmed_track_ids)} confirmed tracks)...")
             _render_annotated_video(
                 video_path, output_paths["annotated_video"],
-                processor, confirmed_track_ids, input_fps
+                processor, confirmed_track_ids, input_fps,
+                video_max_width=video_max_width
             )
         
         if has_composites:
@@ -1356,9 +1396,74 @@ def process_video(video_path: str, processor: VideoInferenceProcessor,
 # VIDEO RENDERING
 # =============================================================================
 
+class _suppress_native_stderr:
+    """
+    Context manager that redirects the process's OS-level stderr (fd 2) to
+    /dev/null. Needed because FFMPEG/libavcodec writes errors (e.g. "Encoder
+    not found") directly to the native fd, which Python-level logging cannot
+    intercept. Best-effort: silently does nothing if redirection isn't possible.
+    """
+    def __enter__(self):
+        self._saved_fd = None
+        self._devnull_fd = None
+        try:
+            err_fd = sys.stderr.fileno()
+            sys.stderr.flush()
+            self._saved_fd = os.dup(err_fd)
+            self._devnull_fd = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(self._devnull_fd, err_fd)
+        except Exception:
+            self._saved_fd = None
+        return self
+
+    def __exit__(self, *exc):
+        if self._saved_fd is not None:
+            try:
+                os.dup2(self._saved_fd, sys.stderr.fileno())
+            finally:
+                os.close(self._saved_fd)
+        if self._devnull_fd is not None:
+            os.close(self._devnull_fd)
+        return False
+
+
+def _open_video_writer(path: str, fps: float, size: Tuple[int, int]) -> cv2.VideoWriter:
+    """
+    Open a VideoWriter, preferring H.264 (much smaller files than mp4v) but
+    falling back to mp4v when the H.264 encoder isn't compiled into this
+    OpenCV/FFMPEG build (common with pip's opencv-python).
+
+    The H.264 probe runs with native stderr suppressed, so the "Encoder not
+    found" FFMPEG message doesn't spam the console when we fall back.
+    """
+    with _suppress_native_stderr():
+        for codec in ("avc1", "mp4v"):
+            writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*codec), fps, size)
+            if writer.isOpened():
+                return writer
+            writer.release()
+        # Last resort (also used if both probes failed for an odd reason).
+        return cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), fps, size)
+
+
+def _output_size(src_w: int, src_h: int, max_width: Optional[int]) -> Tuple[int, int]:
+    """
+    Output (width, height) capped to ``max_width`` (never upscales). Dimensions
+    are rounded to even numbers as required by H.264.
+    """
+    if not max_width or src_w <= max_width:
+        scale = 1.0
+    else:
+        scale = max_width / float(src_w)
+    w = max(2, (int(round(src_w * scale)) // 2) * 2)
+    h = max(2, (int(round(src_h * scale)) // 2) * 2)
+    return w, h
+
+
 def _render_debug_video(video_path: str, output_path: str,
                         processor: VideoInferenceProcessor, confirmed_track_ids: Set[str],
-                        all_track_info: Dict, fps: float) -> None:
+                        all_track_info: Dict, fps: float,
+                        video_max_width: Optional[int] = 1920) -> None:
     """Render debug video showing all detections with confirmed/unconfirmed status."""
     cap = cv2.VideoCapture(video_path)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -1370,17 +1475,47 @@ def _render_debug_video(video_path: str, output_path: str,
         detectShadows=False
     )
     
-    out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width * 2, height))
-    
+    # Side-by-side panel is (width*2, height); cap its width for size/speed.
+    out_size = _output_size(width * 2, height, video_max_width)
+    out = _open_video_writer(output_path, fps, out_size)
+
+    # Visual weight scaled to native resolution (drawing happens pre-downscale).
+    vs = FrameVisualizer.vis_scale(width)
+    box_th = max(1, int(round(2 * vs)))
+    hdr_scale = 0.5 * vs
+    hdr_th = max(1, int(round(vs)))
+
+    # Precompute the chronic-motion heatmap overlay (static over the clip).
+    # The chronic map lives on the ScaledDetector at DETECTION resolution; we
+    # colour-map its per-pixel motion frequency and upscale to native size.
+    # Blended with per-pixel alpha so only chronically-moving regions are
+    # tinted (blue = occasional, red = constant) and clean scene is untouched.
+    chronic_map = getattr(getattr(processor, "_scaled", None), "chronic_map", None)
+    heat_premult = None
+    heat_inv_alpha = None
+    if chronic_map is not None and chronic_map.frames > 0:
+        freq = np.clip(chronic_map.frequency(), 0.0, 1.0)
+        heat = cv2.applyColorMap((freq * 255).astype(np.uint8), cv2.COLORMAP_JET)
+        heat = cv2.resize(heat, (width, height), interpolation=cv2.INTER_LINEAR).astype(np.float32)
+        # Visible opacity: any pixel with non-trivial recurring motion gets a
+        # clearly-visible tint (0.35..0.85, ramped by how chronic it is);
+        # essentially-static pixels stay untouched. (A plain alpha=freq makes
+        # the common low-frequency regions almost transparent — invisible.)
+        a = np.where(freq > 0.02, 0.35 + 0.55 * freq, 0.0).astype(np.float32)
+        alpha = np.clip(cv2.resize(a, (width, height), interpolation=cv2.INTER_LINEAR), 0.0, 0.85)[..., None]
+        heat_premult = heat * alpha
+        heat_inv_alpha = 1.0 - alpha
+
+    # Build per-frame detections and per-track path points for ALL tracks
+    # (confirmed and unconfirmed) so the debug view shows every trajectory.
     frame_detections = defaultdict(list)
-    confirmed_track_points = defaultdict(list)
+    track_points = defaultdict(list)
     for det in processor.all_detections:
         frame_detections[det['frame_number']].append(det)
-        if det['track_id'] in confirmed_track_ids:
-            bbox = det['bbox']
-            cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
-            confirmed_track_points[det['track_id']].append((det['frame_number'], cx, cy))
-    
+        bbox = det['bbox']
+        cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
+        track_points[det['track_id']].append((det['frame_number'], cx, cy))
+
     frame_num = 0
     while True:
         ret, frame = cap.read()
@@ -1389,11 +1524,22 @@ def _render_debug_video(video_path: str, output_path: str,
         
         fg_mask = back_sub.apply(frame)
         fg_display = cv2.cvtColor(fg_mask, cv2.COLOR_GRAY2BGR)
-        
-        for track_id, points in confirmed_track_points.items():
+
+        # Chronic heatmap underlay (drawn first so boxes/paths sit on top).
+        if heat_premult is not None:
+            frame = (frame.astype(np.float32) * heat_inv_alpha + heat_premult).astype(np.uint8)
+
+        # Track paths for ALL tracks: confirmed in their track colour,
+        # unconfirmed as a dim yellow trail.
+        for track_id, points in track_points.items():
             path_to_draw = [(cx, cy) for fn, cx, cy in points if fn <= frame_num]
-            if len(path_to_draw) > 1:
+            if len(path_to_draw) < 2:
+                continue
+            if track_id in confirmed_track_ids:
                 FrameVisualizer.draw_path(frame, path_to_draw, track_id)
+            else:
+                pts = np.array(path_to_draw, dtype=np.int32)
+                cv2.polylines(frame, [pts], False, (0, 170, 170), max(1, int(round(vs))))
         
         for det in frame_detections[frame_num]:
             x1, y1, x2, y2 = [int(v) for v in det['bbox']]
@@ -1408,17 +1554,26 @@ def _render_debug_video(video_path: str, output_path: str,
                 color = (0, 255, 255)
                 label = f"{str(track_id)[:6] if track_id else 'NEW'}"
             
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
-            cv2.rectangle(frame, (x1, y1 - th - 4), (x1 + tw + 4, y1), color, -1)
-            cv2.putText(frame, label, (x1 + 2, y1 - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
-            cv2.rectangle(fg_display, (x1, y1), (x2, y2), color, 2)
+            lbl_scale = 0.4 * vs
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, box_th)
+            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, lbl_scale, hdr_th)
+            pad = int(round(4 * vs))
+            cv2.rectangle(frame, (x1, y1 - th - pad), (x1 + tw + pad, y1), color, -1)
+            cv2.putText(frame, label, (x1 + int(round(2 * vs)), y1 - int(round(2 * vs))),
+                        cv2.FONT_HERSHEY_SIMPLEX, lbl_scale, (0, 0, 0), hdr_th, cv2.LINE_AA)
+            cv2.rectangle(fg_display, (x1, y1), (x2, y2), color, box_th)
         
-        cv2.putText(frame, f"Frame {frame_num} | Detections (Green=Confirmed, Yellow=Tracking)", 
-                   (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        cv2.putText(fg_display, "GMM Motion Mask", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        hy = int(round(25 * vs))
+        cv2.putText(frame, f"Frame {frame_num} | Boxes: Green=Confirmed, Yellow=Tracking | Paths: colour=confirmed, yellow=unconfirmed",
+                   (10, hy), cv2.FONT_HERSHEY_SIMPLEX, hdr_scale, (255, 255, 255), hdr_th, cv2.LINE_AA)
+        if heat_premult is not None:
+            cv2.putText(frame, "Chronic-motion heatmap (blue=occasional -> red=constant)",
+                       (10, hy + int(round(23 * vs))), cv2.FONT_HERSHEY_SIMPLEX, hdr_scale, (0, 215, 255), hdr_th, cv2.LINE_AA)
+        cv2.putText(fg_display, "GMM Motion Mask", (10, hy), cv2.FONT_HERSHEY_SIMPLEX, hdr_scale, (255, 255, 255), hdr_th, cv2.LINE_AA)
         
         combined = np.hstack((frame, fg_display))
+        if (combined.shape[1], combined.shape[0]) != out_size:
+            combined = cv2.resize(combined, out_size, interpolation=cv2.INTER_AREA)
         out.write(combined)
         
         frame_num += 1
@@ -1427,18 +1582,26 @@ def _render_debug_video(video_path: str, output_path: str,
     
     cap.release()
     out.release()
-    print(f"\n✓ Debug video saved: {output_path}")
+    print(f"\n✓ Debug video saved: {output_path} ({out_size[0]}x{out_size[1]})")
 
 
 def _render_annotated_video(video_path: str, output_path: str,
                             processor: VideoInferenceProcessor,
-                            confirmed_track_ids: Set[str], fps: float) -> None:
+                            confirmed_track_ids: Set[str], fps: float,
+                            video_max_width: Optional[int] = 1920) -> None:
     """Render annotated video showing only confirmed tracks with classifications."""
     cap = cv2.VideoCapture(video_path)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
-    out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
+    out_size = _output_size(width, height, video_max_width)
+    out = _open_video_writer(output_path, fps, out_size)
+    vs = FrameVisualizer.vis_scale(width)
+
+    def _write(frame):
+        if (frame.shape[1], frame.shape[0]) != out_size:
+            frame = cv2.resize(frame, out_size, interpolation=cv2.INTER_AREA)
+        out.write(frame)
     
     if not confirmed_track_ids:
         frame_num = 0
@@ -1446,9 +1609,9 @@ def _render_annotated_video(video_path: str, output_path: str,
             ret, frame = cap.read()
             if not ret:
                 break
-            cv2.putText(frame, "No confirmed insect tracks", (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            out.write(frame)
+            cv2.putText(frame, "No confirmed insect tracks", (10, int(round(34 * vs))),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7 * vs, (0, 0, 255), max(1, int(round(2 * vs))), cv2.LINE_AA)
+            _write(frame)
             frame_num += 1
         cap.release()
         out.release()
@@ -1493,9 +1656,10 @@ def _render_annotated_video(video_path: str, output_path: str,
             FrameVisualizer.draw_detection(frame, x1, y1, x2, y2, track_id, classification)
         
         cv2.putText(frame, f"Confirmed Insects ({len(confirmed_track_ids)} tracks)", 
-                   (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                   (10, int(round(25 * vs))), cv2.FONT_HERSHEY_SIMPLEX, 0.6 * vs, (0, 255, 0),
+                   max(1, int(round(2 * vs))), cv2.LINE_AA)
         
-        out.write(frame)
+        _write(frame)
         frame_num += 1
         
         if frame_num % 100 == 0:
@@ -1503,7 +1667,7 @@ def _render_annotated_video(video_path: str, output_path: str,
     
     cap.release()
     out.release()
-    print(f"\n✓ Annotated video saved: {output_path}")
+    print(f"\n✓ Annotated video saved: {output_path} ({out_size[0]}x{out_size[1]})")
 
 
 # =============================================================================
@@ -1548,6 +1712,7 @@ def inference(
     img_size: int = 60,
     classify: bool = True,
     track_composites: bool = False,
+    video_max_width: Optional[int] = 1920,
 ) -> Dict:
     """
     Run inference on a video file.
@@ -1568,6 +1733,9 @@ def inference(
         img_size: Image size for classification (should match training). Default: 60.
         classify: If True, classify confirmed tracks. If False, detection only (NaN for classification).
         track_composites: If True, save composite images showing each track's movement over time.
+        video_max_width: Cap the rendered debug/annotated video width (px) for
+            much smaller files and faster encoding; frames are downscaled to
+            fit (never upscaled). Default 1920. Set None to keep native size.
     
     Returns:
         dict: Processing results with output file paths
@@ -1658,7 +1826,8 @@ def inference(
             processor=processor,
             output_paths=output_paths,
             fps=fps,
-            crops_dir=crops_dir
+            crops_dir=crops_dir,
+            video_max_width=video_max_width,
         )
         
         return {

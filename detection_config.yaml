@@ -1,184 +1,98 @@
 # =============================================================================
 # B++ DETECTION CONFIGURATION
 # =============================================================================
-# This config controls motion-based insect detection parameters.
-# All values shown are defaults - modify as needed for your use case.
+# Motion-based insect detection + tracking parameters (consumed by bugspot).
 #
-# RESOLUTION-INDEPENDENT UNITS
-# ----------------------------
-# Scene-scale pixel parameters below are given as FRACTIONS of the input
-# image dimensions, not as absolute pixels. This makes a single config
-# work across any resolution. Two reference dimensions are used:
+# UNITS — scene-scale pixel parameters are FRACTIONS of image dimensions, so a
+# single config works across resolutions:
+#   * lengths  -> fraction of image WIDTH   (min_displacement, max_frame_jump,
+#                                             revisit_radius)
+#   * areas    -> fraction of image AREA     (min_area, max_area)
+# `morph_kernel_size` and `min_density` are the exception: absolute pixel /
+# length values, auto-scaled from `reference_resolution` to the detection
+# resolution.
 #
-#   * Length-based -> fraction of image width W
-#         Keys:  min_displacement, max_frame_jump, revisit_radius
-#   * Area-based   -> fraction of image area (W * H)
-#         Keys:  min_area, max_area
-#
-# Examples below show the resolved pixel value for a 1080 px wide square
-# frame (1080 x 1080, area = 1,166,400 px^2):
-#   min_area: 0.0002        ->   ~233 px^2
-#   min_displacement: 0.05  ->    54  px
-#
-# `morph_kernel_size` is an exception: it is a local noise-removal
-# kernel and stays in absolute pixels (NxN) regardless of resolution.
+# This example is tuned for 4K landscape footage, with detection downscaled to
+# 1080p for speed.
 #
 # Usage:
 #   results = inference(..., config="detection_config.yaml")
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# GMM BACKGROUND SUBTRACTOR PARAMETERS
+# GMM BACKGROUND SUBTRACTOR
 # -----------------------------------------------------------------------------
-# Controls the Gaussian Mixture Model for motion detection
-
-# Number of frames to build background model
-# Higher = more stable background, slower adaptation to lighting changes
-gmm_history: 500
-
-# Variance threshold for foreground detection
-# Higher = less sensitive, fewer false positives from noise
-gmm_var_threshold: 16
+gmm_history:        500    # frames used to build the background model
+gmm_var_threshold:  16     # foreground variance threshold (higher = stricter)
 
 # -----------------------------------------------------------------------------
 # MORPHOLOGICAL FILTERING
 # -----------------------------------------------------------------------------
-# Noise removal after motion detection
-
-# Size of the morphological kernel in pixels (NxN ellipse).
-# This is an absolute pixel count, NOT a fraction of image width — the
-# kernel targets sensor-level noise, not scene-scale features.
-# Larger = removes more noise but may lose small detections.
-morph_kernel_size: 3
+# Absolute NxN kernel in pixels (NOT a fraction); auto-scaled from
+# reference_resolution to the detection resolution.
+morph_kernel_size:  6
 
 # -----------------------------------------------------------------------------
-# DETECTION RESOLUTION (SPEED)
+# RESOLUTION (speed + config portability)
 # -----------------------------------------------------------------------------
-# Explicit [width, height] (in pixels) to run the detector at. Detection
-# (GMM + morphology + contours) runs on frames resized to this resolution for
-# speed, while bounding boxes are scaled back to native resolution — so
-# tracking, crops, and composites are all still produced at full resolution.
-#
-# null (or omit) = detect at native resolution.
-# Example: [960, 540] detects a 1920x1080 frame at 960x540 (~4x fewer pixels).
-#
-# Area/length thresholds adapt automatically (fraction-based); morph_kernel_size
-# and min_density are scaled internally from reference_resolution (below) to the
-# detection resolution.
-detection_resolution: null
+# detection_resolution: [W, H] to run the detector at; bounding boxes are scaled
+#   back to native, so tracking/crops/composites stay full-res. null = native.
+#   [1920, 1080] is half-4K (~4x fewer pixels than native 4K).
+detection_resolution:  [1920, 1080]
+# reference_resolution: [W, H] that morph_kernel_size / min_density were tuned
+#   for; they auto-scale from here to the detection resolution. null = native.
+reference_resolution:  [3840, 2160]
 
 # -----------------------------------------------------------------------------
-# REFERENCE RESOLUTION (CONFIG PORTABILITY)
+# COHESIVENESS  (rejects scattered plant motion)
 # -----------------------------------------------------------------------------
-# Explicit [width, height] (in pixels) the absolute-pixel params
-# (morph_kernel_size, min_density) were TUNED for. Those two values are
-# auto-scaled from this reference to the resolution detection actually runs at,
-# so a config tuned for one resolution works at any native/detection resolution
-# without re-tuning by hand.
-#
-# null (or omit) = treat the native video resolution as the reference.
-# Example: [3840, 2160] means "this config was tuned for 4K".
-reference_resolution: null
+# Insects are compact single blobs, so they pass easily; this rejects
+# scattered/fragmented motion and is orthogonal to chronic suppression
+# (blob shape vs. recurring location).
+min_largest_blob_ratio: 0.85
+max_num_blobs:          3
+min_motion_ratio:       0.20
 
 # -----------------------------------------------------------------------------
-# COHESIVENESS PARAMETERS
+# SHAPE / SIZE
 # -----------------------------------------------------------------------------
-# These filter scattered motion (wind-blown plants) vs compact motion (insects)
-
-# Min ratio of largest blob to total motion area in detection region
-# Higher = stricter, rejects fragmented detections
-min_largest_blob_ratio: 0.80
-
-# Max number of separate blobs allowed in a detection region
-# Lower = stricter, rejects scattered motion
-max_num_blobs: 5
-
-# Min ratio of motion pixels to bounding box area
-# Higher = requires more filled bounding box
-min_motion_ratio: 0.15
+min_area:    0.00012   # min contour area, fraction of image area
+max_area:    0.0015    # max contour area, fraction of image area
+min_density: 3.0       # min area/perimeter (rejects thin shapes)
+min_solidity: 0.55     # min convex-hull fill (rejects fragmented shapes)
 
 # -----------------------------------------------------------------------------
-# SHAPE PARAMETERS
+# TRACKING
 # -----------------------------------------------------------------------------
-# Filter detections by contour geometry
-
-# Min contour area as FRACTION of image area (rejects noise/tiny detections)
-# 0.0002 on a 1080 x 1080 frame ~= 233 px^2
-min_area: 0.0002
-
-# Max contour area as FRACTION of image area (rejects large moving objects)
-# 0.035 on a 1080 x 1080 frame ~= 40,824 px^2
-max_area: 0.035
-
-# Min area/perimeter ratio (rejects thin/elongated shapes)
-# Unitless shape descriptor; not scaled with image size.
-min_density: 3.0
-
-# Min convex hull fill ratio (rejects irregular/fragmented shapes)
-# 1.0 = perfectly convex, lower = more irregular allowed
-min_solidity: 0.55
+min_displacement:      0.05   # min NET travel to confirm, fraction of width
+min_path_points:       10     # min points before topology analysis
+# Track holding — fewer fragmented tracks => less double-counting:
+max_frame_jump:        0.10   # max per-frame jump, fraction of width
+max_lost_frames:       90     # remember a lost track this many frames
+max_area_change_ratio: 3.0    # max area change ratio between frames
 
 # -----------------------------------------------------------------------------
-# TRACKING PARAMETERS
+# TRACKER MATCHING (Hungarian)
 # -----------------------------------------------------------------------------
-# Control how detections are linked into tracks
-
-# Min NET displacement for track confirmation, as FRACTION of image width.
-# Filters stationary false positives.
-# 0.05 on a 1080 px wide frame = 54 px
-min_displacement: 0.05
-
-# Min path points required before topology analysis
-min_path_points: 10
-
-# Max allowed jump between consecutive frames, as FRACTION of image width.
-# Larger = more tolerant of fast movement, but may link separate objects.
-# 0.1 on a 1080 px wide frame = 108 px
-max_frame_jump: 0.1
-
-# How many frames to remember a lost track before deleting
-# Helps re-link tracks after brief occlusions (e.g., 45 frames @ 30fps = 1.5s)
-max_lost_frames: 45
-
-# Max allowed area change ratio between frames
-# Prevents linking very different sized detections
-max_area_change_ratio: 3.0
+tracker_w_dist:         0.6    # distance cost weight
+tracker_w_area:         0.4    # area cost weight
+tracker_cost_threshold: 0.35   # higher = match to existing tracks more readily
 
 # -----------------------------------------------------------------------------
-# TRACKER MATCHING PARAMETERS
+# PATH TOPOLOGY  (insect-like vs plant-like motion)
 # -----------------------------------------------------------------------------
-# Hungarian algorithm cost function weights
-
-# Weight for distance cost (0-1)
-# Higher = position matters more for matching
-tracker_w_dist: 0.6
-
-# Weight for area cost (0-1)
-# Higher = size similarity matters more for matching
-tracker_w_area: 0.4
-
-# Maximum cost for valid track-detection match (0-1)
-# Lower = stricter matching, more new tracks created
-tracker_cost_threshold: 0.3
+revisit_radius:           0.025  # revisit radius, fraction of width
+max_revisit_ratio:        0.35   # insects explore; hovering clutter revisits
+min_progression_ratio:    0.60   # min forward progression
+max_directional_variance: 0.90   # max heading variance
 
 # -----------------------------------------------------------------------------
-# PATH TOPOLOGY PARAMETERS
+# CHRONIC-MOTION SUPPRESSION  (fixed-camera detection filter)
 # -----------------------------------------------------------------------------
-# Confirm insect-like movement patterns vs random/stationary motion
-
-# Max ratio of revisited positions (insects explore new areas)
-# Lower = stricter, requires more exploration
-max_revisit_ratio: 0.30
-
-# Min forward progression ratio (insects move purposefully)
-# Higher = stricter, requires more directional movement
-min_progression_ratio: 0.70
-
-# Max directional variance (insects maintain relatively consistent heading)
-# Lower = stricter, requires more consistent direction
-max_directional_variance: 0.90
-
-# Radius for determining if a position is "revisited", as FRACTION of image width.
-# Smaller = stricter definition of revisiting.
-# 0.05 on a 1080 px wide frame = 54 px
-revisit_radius: 0.05
+# Accumulates a per-pixel motion-frequency map and drops detections sitting on
+# chronically-moving pixels (wind-blown vegetation, rippling water) BEFORE the
+# tracker — cuts clutter and speeds up tracking.
+chronic_motion_suppression:   true
+chronic_motion_threshold:     0.05  # pixel is "chronic" if moving >= this frac of frames
+max_chronic_overlap:          0.2   # drop detection if bbox overlaps chronic > this
+chronic_motion_warmup_frames: 30    # accumulate this many frames before dropping

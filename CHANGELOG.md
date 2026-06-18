@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2026-06-18
+
+### Added
+- **Chronic-motion debug overlay**: the debug video now renders the chronic
+  motion-frequency heatmap (where wind-blown vegetation / water recur) as a
+  colour overlay, and draws paths for **all** tracks (confirmed in track
+  colour, unconfirmed as a dim trail).
+- **Smaller / faster output videos**: new `video_max_width` argument (default
+  1920) downscales the rendered debug/annotated videos, and the writer now
+  prefers H.264 with an automatic mp4v fallback (the H.264 probe is silenced
+  so missing-encoder builds don't spam errors).
+- Visualisation line/box/text weights now scale with frame resolution so they
+  stay readable when drawing on 4K footage.
+
+### Changed
+- Requires `bugspot >=0.5.0` (chronic-motion suppression lives in the shared
+  `ScaledDetector`, so detections on chronically-moving pixels are dropped
+  before the tracker — cutting clutter and speeding up tracking).
+- `detection_config.yaml` retuned: chronic-motion suppression enabled,
+  half-4K `detection_resolution`, and track-holding / topology thresholds
+  tuned to reduce double-counting and false positives.
+
 ## [2.3.2] - 2026-06-10
 
 ### Added
